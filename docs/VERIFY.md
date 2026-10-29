@@ -99,3 +99,10 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - Cursor Automations（Grok）端到端：任務建立 → callback → 結果回寫。
 - Pi 部署（`docker-compose.pi.yml` + Cloudflare Tunnel 收 webhook）。
 - Anthropic classifier 實際呼叫真實 API 的分類品質與延遲。
+
+
+## 補記（2026-10-30）
+
+- 正式環境（Pi + Cloudflare Tunnel，`https://linebot.yuzen.tw`）已收到 LINE webhook 並正確回覆：「運費多少」→ `kb_answer` 0.95。
+- 曾被 Cloudflare 自訂規則（台灣以外封鎖）擋成 403，已加 Skip 規則放行 `/webhook`（ASN 38631）與 `/grok/callback`。
+- 本機開發容器與 cloudflared 已停止。

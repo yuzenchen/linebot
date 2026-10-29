@@ -281,15 +281,15 @@ interface GrokGateway { readonly configured: boolean; run(task: GrokTask): Promi
 
 ## 10. MVP 完成定義
 
-- [ ] 本機 Docker 起服務，`/health` 回 200。
-- [ ] 以 LINE 測試帳號加好友，收到歡迎詞。
-- [ ] 五類訊息各一則，皆在 10 秒內收到符合 5.3 表格的回覆；SQLite 可查到 messages / classifications。
-- [ ] 把 `HEALTH_CHECK_URL` 指向不存在的網址，回報異常時收到「已確認異常」文案，`incidents` 有紀錄，管理員（若設定）收到 push。
-- [ ] 需求建議存入 `suggestions`，`export:suggestions` 產出 Markdown。
-- [ ] 重送同一 webhook body 不會重複回覆。
-- [ ] 拔掉 `ANTHROPIC_API_KEY` 後服務仍能回覆（規則式）。
-- [ ] `npm test`、`npm run lint`、`npm run build` 通過。
-- [ ] `docker-compose.pi.yml` 在 Pi 上啟動並透過 Cloudflare Tunnel 收到 webhook（使用者操作，實作者提供步驟）。
+- [x] 本機 Docker 起服務，`/health` 回 200。
+- [x] 以 LINE 測試帳號加好友，收到歡迎詞。
+- [x] 五類訊息各一則，皆在 10 秒內收到符合 5.3 表格的回覆；SQLite 可查到 messages / classifications。
+- [x] 把 `HEALTH_CHECK_URL` 指向不存在的網址，回報異常時收到「已確認異常」文案，`incidents` 有紀錄，管理員（若設定）收到 push。
+- [x] 需求建議存入 `suggestions`，`export:suggestions` 產出 Markdown。
+- [x] 重送同一 webhook body 不會重複回覆。
+- [x] 拔掉 `ANTHROPIC_API_KEY` 後服務仍能回覆（規則式）。
+- [x] `npm test`、`npm run lint`、`npm run build` 通過。
+- [x] `docker-compose.pi.yml` 在 Pi 上啟動並透過 Cloudflare Tunnel 收到 webhook（2026-10-30 驗證，需 WAF 例外，見 LINE-SETUP.md 第 7 節）。
 
 ## 11. 待確認事項（不阻塞 MVP）
 
