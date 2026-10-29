@@ -8,6 +8,7 @@ import type { GrokGateway, GrokResult, GrokTask } from '../grok/gateway.js';
 import type { HealthResult } from '../health/check.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
+import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, texts } from '../texts.js';
 import { type Job, type JobHandlers, SkipJob } from './queue.js';
 
@@ -15,7 +16,10 @@ export interface JobHandlerDeps {
   repos: Pick<Repos, 'suggestions' | 'grokTasks'>;
   replier: Pick<Replier, 'push'>;
   grok: GrokGateway;
-  config: Pick<Config, 'ADMIN_LINE_USER_ID' | 'GROK_TASK_TIMEOUT_MS'>;
+  config: Pick<Config, 'ADMIN_LINE_USER_ID' | 'GROK_TASK_TIMEOUT_MS'> &
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+  /** Defaults to one built from `config` + `replier`. */
+  adminNotifier?: AdminNotifier;
   /** Must match the JobQueue's maxAttempts. Default 5. */
   maxAttempts?: number;
   now?: () => Date;
@@ -90,18 +94,16 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
   const log = deps.log ?? logger;
   const now = deps.now ?? clockNow;
   const maxAttempts = deps.maxAttempts ?? 5;
-  const admin = config.ADMIN_LINE_USER_ID;
+  const notifier = deps.adminNotifier ?? createAdminNotifier({ config, replier, log: deps.log });
   const timeoutMs = config.GROK_TASK_TIMEOUT_MS;
 
   async function notifyServiceQuestionFallback(userId: string, text: string): Promise<void> {
     await replier.push(userId, [texts.grokUnavailable], 'grok_unavailable');
-    if (admin) {
-      await replier.push(
-        admin,
-        [adminServiceQuestionNotice({ userId, text })],
-        'admin_service_question',
-      );
-    }
+    await notifier.notify({
+      kind: 'service_question',
+      text: adminServiceQuestionNotice({ userId, text }),
+      meta: { userId },
+    });
   }
 
   /**

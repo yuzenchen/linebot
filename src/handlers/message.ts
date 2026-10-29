@@ -7,6 +7,7 @@ import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
 import { MAX_MESSAGES, type Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
+import type { AdminNotifier } from '../notify/adminNotifier.js';
 import { texts } from '../texts.js';
 import type { TextMessageContext } from './dispatcher.js';
 import { createFeatureHandler } from './feature.js';
@@ -27,7 +28,10 @@ export interface MessageDeps {
   config: Pick<
     Config,
     'REPLY_DEADLINE_MS' | 'CONTEXT_MESSAGES' | 'ADMIN_LINE_USER_ID' | 'GROK_WEBHOOK_URL'
-  >;
+  > &
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+  /** T13: passed to the incident handler; defaults to one built from `config` + `replier`. */
+  adminNotifier?: AdminNotifier;
   /** T7: human handoff. When absent the check is skipped. */
   handoff?: HandoffHook;
   /** T7: full handoff service (admin commands, keyword / low-confidence entry); its hook wins over `handoff`. */

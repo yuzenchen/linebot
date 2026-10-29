@@ -7,6 +7,7 @@ import type { HealthChecker, HealthResult } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
+import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminIncidentNotice, texts } from '../texts.js';
 import type { TextMessageContext } from './dispatcher.js';
 
@@ -19,7 +20,10 @@ export interface IncidentDeps {
   replier: Pick<Replier, 'push'>;
   health: HealthChecker;
   jobs: Pick<JobQueue, 'enqueue'>;
-  config: Pick<Config, 'ADMIN_LINE_USER_ID' | 'GROK_WEBHOOK_URL'>;
+  config: Pick<Config, 'ADMIN_LINE_USER_ID' | 'GROK_WEBHOOK_URL'> &
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+  /** Defaults to one built from `config` + `replier`. */
+  adminNotifier?: AdminNotifier;
   now?: () => Date;
   log?: Logger;
 }
@@ -50,6 +54,9 @@ function healthRaw(h: HealthResult): string {
 export function createIncidentHandler(deps: IncidentDeps) {
   const log = deps.log ?? logger;
   const now = deps.now ?? clockNow;
+  const notifier =
+    deps.adminNotifier ??
+    createAdminNotifier({ config: deps.config, replier: deps.replier, log: deps.log });
 
   return async function handleIncident(
     ctx: TextMessageContext,
@@ -83,12 +90,16 @@ export function createIncidentHandler(deps: IncidentDeps) {
     const notice = adminIncidentNotice({ userId, text, health: h });
     if (merged) {
       log.info({ userId, incidentId, health: h.status }, 'incident merged; admin not re-notified');
-    } else if (deps.config.ADMIN_LINE_USER_ID) {
-      await deps.replier.push(deps.config.ADMIN_LINE_USER_ID, [notice], 'admin_incident');
-      deps.repos.incidents.markAdminNotified(incidentId);
-      log.info({ userId, incidentId, health: h.status }, 'admin notified of incident');
     } else {
-      log.warn({ userId, incidentId, notice }, 'incident confirmed but ADMIN_LINE_USER_ID not set');
+      const result = await notifier.notify({
+        kind: 'incident',
+        text: notice,
+        meta: { userId, incidentId, health: h.status },
+      });
+      if (result !== 'logged') {
+        deps.repos.incidents.markAdminNotified(incidentId);
+        log.info({ userId, incidentId, health: h.status, result }, 'admin notified of incident');
+      }
     }
     deps.jobs.enqueue('incident_triage', triagePayload);
     return [texts.incidentConfirmed];

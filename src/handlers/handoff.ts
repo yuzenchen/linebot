@@ -4,6 +4,7 @@ import type { Repos } from '../db/repos.js';
 import { now as clockNow } from '../db/time.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
+import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import {
   adminForwardNotice,
   adminHandoffDone,
@@ -35,7 +36,10 @@ const RECENT_SCAN = 20;
 export interface HandoffDeps {
   repos: Pick<Repos, 'users' | 'messages' | 'pushLog' | 'jobs'> & Partial<Pick<Repos, 'grokTasks'>>;
   replier: Replier;
-  config: Pick<Config, 'ADMIN_LINE_USER_ID'>;
+  config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+  /** Defaults to one built from `config` + `replier`. */
+  adminNotifier?: AdminNotifier;
   now?: () => Date;
   log?: Logger;
 }
@@ -45,20 +49,11 @@ export function createHandoffService(deps: HandoffDeps) {
   const { repos, replier, config } = deps;
   const log = deps.log ?? logger;
   const now = deps.now ?? clockNow;
+  // Admin *notices* go through the AdminNotifier (relayed to the admin bot when configured, T13).
+  // Admin *commands* (/status, /resume, /handoff) stay on this enduser bot because its DB owns the
+  // handoff state; they are still authorised by ADMIN_LINE_USER_ID.
   const adminId = config.ADMIN_LINE_USER_ID;
-
-  /** Push to admin if configured; logs and swallows failures. */
-  async function pushAdmin(text: string, reason: string, meta: Record<string, unknown>) {
-    if (!adminId) {
-      log.warn({ ...meta, reason }, 'ADMIN_LINE_USER_ID not set; admin notice not sent');
-      return;
-    }
-    try {
-      await replier.push(adminId, [text], reason);
-    } catch (err) {
-      log.error({ ...meta, reason, err }, 'admin push failed');
-    }
-  }
+  const notifier = deps.adminNotifier ?? createAdminNotifier({ config, replier, log: deps.log });
 
   async function pushUser(userId: string, text: string, reason: string) {
     try {
@@ -86,11 +81,11 @@ export function createHandoffService(deps: HandoffDeps) {
   async function enter(userId: string, reason: string): Promise<string[]> {
     startHandoff(userId);
     log.info({ userId, reason }, 'handoff entered');
-    await pushAdmin(
-      adminHandoffNotice({ userId, reason, recentMessages: recentInbound(userId) }),
-      'admin_handoff',
-      { userId },
-    );
+    await notifier.notify({
+      kind: 'handoff',
+      text: adminHandoffNotice({ userId, reason, recentMessages: recentInbound(userId) }),
+      meta: { userId },
+    });
     return [texts.handoffEntered];
   }
 
@@ -106,11 +101,11 @@ export function createHandoffService(deps: HandoffDeps) {
     async forward(ctx: TextMessageContext): Promise<void> {
       try {
         log.info({ userId: ctx.userId, messageId: ctx.messageId }, 'handoff: forwarding to admin');
-        await pushAdmin(
-          adminForwardNotice({ userId: ctx.userId, text: ctx.text }),
-          'admin_forward',
-          { userId: ctx.userId, messageId: ctx.messageId },
-        );
+        await notifier.notify({
+          kind: 'forward',
+          text: adminForwardNotice({ userId: ctx.userId, text: ctx.text }),
+          meta: { userId: ctx.userId, messageId: ctx.messageId },
+        });
       } catch (err) {
         log.error({ userId: ctx.userId, err }, 'handoff forward failed');
       }

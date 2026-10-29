@@ -1,4 +1,5 @@
 import type { TextMessageContext } from '../handlers/dispatcher.js';
+import { createInternalNotifyRoute } from '../notify/internalRoute.js';
 import { texts } from '../texts.js';
 import { mountGrokCallback } from './enduser.js';
 import type { BotProfile, Shared } from './types.js';
@@ -33,7 +34,18 @@ export function createAdminProfile(shared: Shared): BotProfile {
     name: 'admin',
     handleText,
     welcomeText: () => texts.adminWelcome,
-    extraRoutes: (app) =>
-      mountGrokCallback(app, { token: config.GROK_CALLBACK_TOKEN, repos, replier, config }),
+    extraRoutes: (app) => {
+      mountGrokCallback(app, { token: config.GROK_CALLBACK_TOKEN, repos, replier, config });
+      // T13: notices relayed from the enduser bot; reachable only inside the docker network.
+      app.route(
+        '/internal/notify',
+        createInternalNotifyRoute({
+          token: config.INTERNAL_NOTIFY_TOKEN,
+          adminUserIds: config.ADMIN_USER_IDS,
+          replier,
+          log: logger,
+        }),
+      );
+    },
   };
 }

@@ -8,6 +8,7 @@ import type { Repos } from '../db/repos.js';
 import { suggestionSummarySchema } from '../jobs/handlers.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
+import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../texts.js';
 import { CALLBACK_TOKEN_HEADER } from './gateway.js';
 
@@ -16,7 +17,10 @@ export interface GrokCallbackDeps {
   token?: string;
   repos: Pick<Repos, 'grokTasks' | 'suggestions'>;
   replier: Pick<Replier, 'push'>;
-  config: Pick<Config, 'ADMIN_LINE_USER_ID'>;
+  config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+  /** Defaults to one built from `config` + `replier`. */
+  adminNotifier?: AdminNotifier;
   log?: Logger;
 }
 
@@ -70,7 +74,8 @@ function parsePayload(raw: string | null): Payload {
 export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
   const log = deps.log ?? logger;
   const { repos, replier } = deps;
-  const admin = deps.config.ADMIN_LINE_USER_ID;
+  const notifier =
+    deps.adminNotifier ?? createAdminNotifier({ config: deps.config, replier, log: deps.log });
   const app = new Hono();
 
   async function push(userId: string, text: string, reason: string, meta: object): Promise<void> {
@@ -81,12 +86,12 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
     }
   }
 
-  async function pushAdmin(text: string, reason: string, meta: object): Promise<void> {
-    if (!admin) {
-      log.warn({ ...meta, reason }, 'ADMIN_LINE_USER_ID not set; admin notice not sent');
-      return;
-    }
-    await push(admin, text, reason, meta);
+  async function notifyAdmin(
+    kind: 'service_question' | 'triage',
+    text: string,
+    meta: object,
+  ): Promise<void> {
+    await notifier.notify({ kind, text, meta: { ...meta } });
   }
 
   async function applyServiceQuestion(task: GrokTaskRow, body: CallbackBody, meta: object) {
@@ -112,9 +117,9 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
         const { text } = parsePayload(task.payload);
         await push(userId, texts.grokUnavailable, 'grok_unavailable', meta);
         const notice = adminServiceQuestionNotice({ userId, text: text ?? '' });
-        await pushAdmin(
+        await notifyAdmin(
+          'service_question',
           custom ? `${notice}\n失敗原因：${custom}` : notice,
-          'admin_service_question',
           meta,
         );
       }
@@ -126,15 +131,15 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
     const id = incidentId ?? 0;
     const custom = body.text?.trim();
     if (body.status === 'done') {
-      await pushAdmin(
+      await notifyAdmin(
+        'triage',
         adminTriageNotice({ incidentId: id, text: custom as string }),
-        'admin_triage',
         meta,
       );
     } else if (body.status === 'failed') {
-      await pushAdmin(
+      await notifyAdmin(
+        'triage',
         adminTriageNotice({ incidentId: id, text: `分析失敗：${custom || '未說明原因'}` }),
-        'admin_triage',
         meta,
       );
     }

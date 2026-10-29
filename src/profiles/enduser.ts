@@ -6,6 +6,7 @@ import { defaultWelcomeText } from '../handlers/dispatcher.js';
 import { createHandoffService } from '../handlers/handoff.js';
 import { createTextMessageHandler } from '../handlers/message.js';
 import { createJobHandlers } from '../jobs/handlers.js';
+import { createAdminNotifier } from '../notify/adminNotifier.js';
 import type { BotProfile, Shared } from './types.js';
 
 export const JOB_MAX_ATTEMPTS = 5;
@@ -19,14 +20,17 @@ export function mountGrokCallback(app: Hono, deps: GrokCallbackDeps): void {
 export function createEnduserProfile(shared: Shared): BotProfile {
   const { config, repos, replier, jobs, grok, health, logger } = shared;
   const classifier = createClassifierFromConfig();
+  // One notifier for every admin notice: relays to the admin bot when ADMIN_NOTIFY_URL is set (T13).
+  const adminNotifier = createAdminNotifier({ config, replier, log: logger });
   const handlers = createJobHandlers({
     repos,
     replier,
     grok,
     config,
+    adminNotifier,
     maxAttempts: JOB_MAX_ATTEMPTS,
   });
-  const handoffService = createHandoffService({ repos, replier, config });
+  const handoffService = createHandoffService({ repos, replier, config, adminNotifier });
   const handleText = createTextMessageHandler({
     repos,
     replier,
@@ -35,6 +39,7 @@ export function createEnduserProfile(shared: Shared): BotProfile {
     jobs,
     config,
     handoffService,
+    adminNotifier,
   });
   let sweeper: GrokTaskSweeper | undefined;
 
@@ -43,12 +48,18 @@ export function createEnduserProfile(shared: Shared): BotProfile {
     handleText,
     welcomeText: defaultWelcomeText,
     extraRoutes: (app) =>
-      mountGrokCallback(app, { token: config.GROK_CALLBACK_TOKEN, repos, replier, config }),
+      mountGrokCallback(app, {
+        token: config.GROK_CALLBACK_TOKEN,
+        repos,
+        replier,
+        config,
+        adminNotifier,
+      }),
     start: () => {
       jobs.start(handlers);
       logger.info('job queue started');
       if (grok.configured) {
-        sweeper = startGrokTaskSweeper({ repos, replier, config });
+        sweeper = startGrokTaskSweeper({ repos, replier, config, adminNotifier });
         logger.info({ timeoutMs: config.GROK_TASK_TIMEOUT_MS }, 'grok task sweeper started');
       }
     },

@@ -5,12 +5,16 @@ import type { Repos } from '../db/repos.js';
 import { now as clockNow } from '../db/time.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
+import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../texts.js';
 
 export interface GrokTaskSweeperDeps {
   repos: Pick<Repos, 'grokTasks'>;
   replier: Pick<Replier, 'push'>;
-  config: Pick<Config, 'ADMIN_LINE_USER_ID'>;
+  config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+  /** Defaults to one built from `config` + `replier`. */
+  adminNotifier?: AdminNotifier;
   /** Default 60000. */
   intervalMs?: number;
   now?: () => Date;
@@ -35,7 +39,8 @@ export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
   const { repos, replier } = deps;
   const log = deps.log ?? logger;
   const now = deps.now ?? clockNow;
-  const admin = deps.config.ADMIN_LINE_USER_ID;
+  const notifier =
+    deps.adminNotifier ?? createAdminNotifier({ config: deps.config, replier, log: deps.log });
   const intervalMs = deps.intervalMs ?? 60000;
 
   async function push(userId: string, text: string, reason: string, meta: object) {
@@ -53,27 +58,23 @@ export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
     const text = payloadText(row);
     if (row.type === 'service_question' && row.user_id) {
       await push(row.user_id, texts.grokTimeout, 'grok_timeout', meta);
-      if (admin) {
-        await push(
-          admin,
-          adminServiceQuestionNotice({ userId: row.user_id, text }),
-          'admin_service_question',
-          meta,
-        );
-      }
-    } else if (row.type === 'incident_triage' && admin) {
+      await notifier.notify({
+        kind: 'service_question',
+        text: adminServiceQuestionNotice({ userId: row.user_id, text }),
+        meta,
+      });
+    } else if (row.type === 'incident_triage') {
       let incidentId = 0;
       try {
         incidentId = (JSON.parse(row.payload ?? '{}') as { incidentId?: number }).incidentId ?? 0;
       } catch {
         // keep 0
       }
-      await push(
-        admin,
-        adminTriageNotice({ incidentId, text: '專人系統逾時未回覆分析結果。' }),
-        'admin_triage',
+      await notifier.notify({
+        kind: 'triage',
+        text: adminTriageNotice({ incidentId, text: '專人系統逾時未回覆分析結果。' }),
         meta,
-      );
+      });
     }
   }
 

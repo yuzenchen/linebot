@@ -129,4 +129,4 @@ API 回傳完整 `customer`（姓名、電話、email、IG、地址）。bot 回
 
 ### 管理通知的傳遞方式（T13 定案）
 
-客戶端容器不持有管理端 channel token。客戶端 bot 把通知 `POST http://linebot-admin:8091/internal/notify`（同一個 docker network），header `x-internal-token`（兩個容器共用的 `INTERNAL_NOTIFY_TOKEN`），body `{ kind, text, meta }`；管理端收到後 push 給 `ADMIN_USER_IDS` 全部成員並記 `push_log`。管理端未啟動或回非 2xx 時，客戶端退回原本的 `ADMIN_LINE_USER_ID` push（若有設）並記 warn。`/internal/notify` 不經 tunnel 對外（Cloudflare 只路由 `/webhook` 與 `/grok/callback` 到管理端；其餘路徑仍被 WAF 擋），且 token 不符回 401。
+客戶端容器不持有管理端 channel token。客戶端 bot 把通知 `POST http://linebot-admin:8090/internal/notify`（容器內 port 8090，host 映射才是 8091）（同一個 docker network），header `x-internal-token`（兩個容器共用的 `INTERNAL_NOTIFY_TOKEN`），body `{ kind, text, meta }`；管理端收到後 push 給 `ADMIN_USER_IDS` 全部成員並記 `push_log`。管理端未啟動或回非 2xx 時，客戶端退回原本的 `ADMIN_LINE_USER_ID` push（若有設）並記 warn。`/internal/notify` 不經 tunnel 對外（Cloudflare 只路由 `/webhook` 與 `/grok/callback` 到管理端；其餘路徑仍被 WAF 擋），且 token 不符回 401。
