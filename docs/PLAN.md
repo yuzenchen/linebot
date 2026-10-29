@@ -126,3 +126,25 @@ Heavy：設計 system prompt、工具 schema、回覆格式規範、多輪工具
 - [x] 狀態（2026-10-30 接受：Pi 上 linebot-admin 容器、linebot-admin.yuzen.tw、WAF 例外、LINE Verify 與實際查詢皆通過）
 
 Pi 上啟動第二個容器、Cloudflare hostname 與 WAF 例外、LINE 管理端 channel 設定（文件化到 LINE-SETUP.md）、SPEC-ADMIN 第 10 節逐項驗證並寫入 VERIFY.md。
+
+---
+
+# 第二批：工單與專人回覆（規格見 `docs/SPEC-ADMIN.md` 第 12 節，未核准、未實作）
+
+## T15 客戶端工單（Careful）— 依賴：T13
+
+- [ ] 狀態
+
+migration 004 `tickets`；repo；開單點（jobs/handlers Null 與非暫時性失敗、callback failed、sweeper 逾時、handoff 進入）改為「開單或附加 + 通知」；`message.ts` 在分類後對 `service_related` 檢查 open 工單 → `ticketPending` 並通知追問；`POST /internal/reply`（token、zod、push、工單 answered、messages out）；24 小時自動關單（併入 sweeper 迴圈）；callback 7 天內事後 `done` 的處理（12.4）。測試涵蓋 12.6 前三項與第五、六、七項的客戶端部分。
+
+## T16 管理端回覆流程（Careful）— 依賴：T15
+
+- [ ] 狀態
+
+`pending_confirmations` 表（或記憶體 + 到期）；`handlers/admin.ts` 在模型前加正則攔截：「回覆 T<id> <內容>」、`Y`、「待回覆」、「工單 T<id>」、「關閉 T<id>」；工具 `reply_customer` 只建立待確認項；送出呼叫客戶端 `/internal/reply`；結果回管理員；`admin_queries` 記錄；`ENDUSER_INTERNAL_URL` 設定。測試：確認/取消/到期、兩位管理員各自的待確認項互不干擾、送出失敗訊息。
+
+## T17 部署與驗證（Light）— 依賴：T15、T16
+
+- [ ] 狀態
+
+Pi 兩個容器更新、`.env.admin` 加 `ENDUSER_INTERNAL_URL`、CURSOR-AUTOMATION.md 補事後補充段落、SPEC-ADMIN 12.6 逐項驗證寫入 VERIFY.md。

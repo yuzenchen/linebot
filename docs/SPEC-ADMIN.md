@@ -131,3 +131,82 @@ API 回傳完整 `customer`（姓名、電話、email、IG、地址）。bot 回
 ### 管理通知的傳遞方式（T13 定案）
 
 客戶端容器不持有管理端 channel token。客戶端 bot 把通知 `POST http://linebot-admin:8090/internal/notify`（容器內 port 8090，host 映射才是 8091）（同一個 docker network），header `x-internal-token`（兩個容器共用的 `INTERNAL_NOTIFY_TOKEN`），body `{ kind, text, meta }`；管理端收到後 push 給 `ADMIN_USER_IDS` 全部成員並記 `push_log`。管理端未啟動或回非 2xx 時，客戶端退回原本的 `ADMIN_LINE_USER_ID` push（若有設）並記 warn。`/internal/notify` 不經 tunnel 對外（Cloudflare 只路由 `/webhook` 與 `/grok/callback` 到管理端；其餘路徑仍被 WAF 擋），且 token 不符回 401。
+
+## 12. 工單與專人回覆客戶（第二批，2026-10-30 討論定案，未實作）
+
+### 12.1 問題
+
+Grok（Cursor）答不出、逾時或未設定時，客戶收到「改由人工處理」，管理員收到通知，但之後查到的答案沒有路回到那位客戶，也沒有人記得「這個問題對應哪個 LINE 使用者」。
+
+### 12.2 工單（tickets，客戶端 bot 擁有）
+
+| 欄位 | 說明 |
+|------|------|
+| `id` | 整數，顯示為 `T042` |
+| `user_id` | 客戶 LINE userId |
+| `source` | `grok_failed` / `grok_timeout` / `grok_unconfigured` / `handoff` |
+| `question` | 客戶原文 |
+| `context` | 最近 3 則客戶訊息（JSON，遮罩後） |
+| `order_ids` | 原文或 Grok 任務中辨識到的訂單編號（JSON，可空） |
+| `grok_task_id` | 對應的 grok_tasks.id（可空） |
+| `status` | `open` / `answered` / `closed` |
+| `answered_by` / `answer` / `answered_at` | 回覆者 userId、內容、時間 |
+| `created_at` / `updated_at` | |
+
+開單時機（每位客戶同時只有一張 `open` 工單；已有就附加 question 到既有工單並更新時間）：
+
+- `service_question` 的 Grok 回 `failed`、任務逾時（sweeper）、Grok 未設定（Null gateway）。
+- 人工轉接進入時（`source=handoff`）。
+- `incident_triage` 不開工單（異常走既有通知）。
+
+通知文字（經 AdminNotifier 送到管理端）：
+
+```
+[待回覆 T042] 客戶 U6037873…
+問：我的訂單什麼時候出貨
+最近對話：
+- 昨天訂的
+- 我的訂單什麼時候出貨
+訂單：#20261029-VXJG7AZY
+回覆方式：在這裡打「回覆 T042 <內容>」
+```
+
+客戶端行為：
+
+- 有 `open` 工單的客戶再傳服務相關問題 → 直接 reply `texts.ticketPending`「專人處理中，有結果會在這裡回覆你」，把訊息附加到工單並通知管理端「[T042 追問] …」，不再送 Grok。知識庫能答、無關、建議、異常仍照常處理。
+- 收到專人回覆後 push 給客戶，並以 `direction=out` 寫入 messages，之後的分類脈絡看得到這則回覆。
+
+### 12.3 管理端回覆（`reply_customer`）
+
+- 管理員（`ADMIN_USER_IDS`，含店家老闆）在管理端 bot 打：「回覆 T042 訂單已收到款項，正在備貨」。
+- 處理順序在模型之前：正則 `^回覆\s*T?(\d+)\s*(.+)$`s 命中 → 不呼叫模型，直接進確認流程；也提供工具 `reply_customer({ticketId, text})` 讓模型在自然語言（「幫我跟 T042 說已經出貨了」）時呼叫，工具本身只建立待確認項，不送出。
+- **確認**：bot 複述「將送給 T042 的客戶：『…』 回 Y 送出，其他內容取消」，把待確認項存進 `pending_confirmations`（管理員 userId、ticket、text、10 分鐘到期）。管理員回 `Y` / `y` / `是` → 送出；回其他 → 取消並正常處理該訊息。
+- 送出 = 管理端 bot `POST ${ENDUSER_INTERNAL_URL}/internal/reply`（客戶端新端點，`x-internal-token` 同一把）body `{ ticketId, text, by }` → 客戶端 push 客戶、工單 `answered`、記錄；回 `{ok, pushed}`。失敗（客戶已封鎖、push 失敗）回管理員「送出失敗：…」，工單維持 open。
+- 限制：純文字、≤ 1000 字、一次一張工單；同一工單可多次回覆；`admin_queries` 記錄 `reply_customer` 呼叫與結果。
+- 關單：回覆後工單為 `answered`；客戶 24 小時內沒再追問自動 `closed`；管理員可打「關閉 T042」。
+- 管理端新指令（正則，不經模型）：「待回覆」列出 open 工單（最多 10 張）；「工單 T042」看單張明細與對話。
+
+### 12.4 Cursor 事後補充回答
+
+- `/grok/callback` 對已關閉（`done` / `failed` / `expired`）的 `service_question` 任務，在 **7 天內**再收到 `status=done` 且帶 `text` 時，不再回 `ignored`，改為：有對應 open 工單 → 視同專人回覆（`answered_by = grok`），push 客戶並關單；沒有工單 → 直接 push 客戶（reason `grok_followup`），同一任務最多 3 次。
+- `incident_triage` / `summarize_suggestion` 維持現狀。
+- `docs/CURSOR-AUTOMATION.md` 補充：任務結束後若人工補上答案，可再 POST 一次 `done`。
+
+### 12.5 環境變數
+
+| 變數 | 端 | 說明 |
+|------|----|------|
+| `ENDUSER_INTERNAL_URL` | 管理端 | 客戶端容器內部網址，Pi 上 `http://linebot:8090` |
+| `INTERNAL_NOTIFY_TOKEN` | 兩端 | 既有，雙向共用 |
+| `TICKET_AUTO_CLOSE_MS` | 客戶端 | 預設 86400000（24 小時） |
+| `GROK_FOLLOWUP_WINDOW_MS` | 客戶端 | 預設 604800000（7 天） |
+
+### 12.6 完成定義
+
+- [ ] Grok 回 failed 後客戶端開工單，管理端收到含 `T` 編號與最近對話的通知。
+- [ ] 管理員打「回覆 T042 …」→ 複述 → 回 Y → 客戶在 LINE 收到訊息，工單變 `answered`，`admin_queries` 有紀錄。
+- [ ] 回非 Y → 取消，該訊息照常處理。
+- [ ] 店家老闆（第二個白名單 userId）同樣可回覆。
+- [ ] 客戶在 open 工單期間追問 → 收到「專人處理中」，管理端收到追問通知，不送 Grok。
+- [ ] Cursor 對已關閉任務再 POST done → 客戶收到補充答案。
+- [ ] 10 分鐘未確認的待確認項自動失效。
