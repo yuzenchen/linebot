@@ -31,6 +31,9 @@ export function createGrokTasksRepo(db: Database) {
   const setStatus = db.prepare(
     'UPDATE grok_tasks SET status = ?, last_text = COALESCE(?, last_text), callbacks = callbacks + 1, updated_at = ? WHERE id = ?',
   );
+  const recordFollowUp = db.prepare(
+    'UPDATE grok_tasks SET callbacks = callbacks + 1, last_text = COALESCE(?, last_text) WHERE id = ?',
+  );
   const listExpired = db.prepare(
     "SELECT * FROM grok_tasks WHERE status IN ('sent', 'received', 'processing') AND expires_at <= ? ORDER BY expires_at ASC, id ASC",
   );
@@ -65,6 +68,10 @@ export function createGrokTasksRepo(db: Database) {
     /** Also bumps `callbacks` and `updated_at`; keeps the previous `last_text` when none is given. */
     setStatus(id: string, status: GrokTaskStatus, lastText?: string): void {
       setStatus.run(status, lastText ?? null, nowIso(), id);
+    },
+    /** Counts a post-closure callback (SPEC-ADMIN §12.4) without touching `updated_at`. */
+    recordFollowUp(id: string, lastText?: string): void {
+      recordFollowUp.run(lastText ?? null, id);
     },
     /** Open tasks whose `expires_at <= now`. */
     listExpired(now: Date): GrokTaskRow[] {

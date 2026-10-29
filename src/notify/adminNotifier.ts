@@ -4,7 +4,15 @@ import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 
 export type AdminNoticeKind =
-  'incident' | 'handoff' | 'forward' | 'service_question' | 'triage' | 'grok_timeout' | 'other';
+  | 'incident'
+  | 'handoff'
+  | 'forward'
+  | 'service_question'
+  | 'triage'
+  | 'grok_timeout'
+  | 'ticket'
+  | 'ticket_followup'
+  | 'other';
 
 export interface AdminNotice {
   kind: AdminNoticeKind;

@@ -8,6 +8,7 @@ import { createJobsRepo } from './jobs.js';
 import { createMessagesRepo } from './messages.js';
 import { createPushLogRepo } from './pushLog.js';
 import { createSuggestionsRepo } from './suggestions.js';
+import { createTicketsRepo } from './tickets.js';
 import { createUsersRepo } from './users.js';
 
 /** Builds every repository on one connection. */
@@ -23,6 +24,7 @@ export function createRepos(db: Database) {
     jobs: createJobsRepo(db),
     grokTasks: createGrokTasksRepo(db),
     adminQueries: createAdminQueriesRepo(db),
+    tickets: createTicketsRepo(db),
   };
 }
 

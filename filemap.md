@@ -24,7 +24,7 @@
 - `src/profiles/` — T10：同一份程式碼兩種 bot，由 `BOT_PROFILE` 選擇
 - `src/profiles/types.ts` — `BotProfile`（`handleText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
 - `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
-- `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、Grok sweeper）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
+- `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、工單服務、`/internal/reply`、sweeper 固定啟動）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
 - `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`
 - `src/line/client.ts` — `createLineClient()` 建 `MessagingApiClient`；`LineApi` 介面（reply / push / showLoading，測試傳 fake）
 - `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
@@ -38,7 +38,7 @@
 - `src/admin/loop.ts` — `runAdminQuery()`：`beta.messages.create` 手寫迴圈（server-side fallback、effort medium、tool_choice auto / 上限時 none + 系統訊息、stop_reason 對應、逾時與總預算），永不 reject；`AdminModelClient` 介面供測試注入 fake
 - `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
 - `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
-- `src/handlers/handoff.ts` — `createHandoffService()`：SPEC 5.7 人工轉接（關鍵字 / 連續 2 則低信心 / `/handoff` 進入、24h 到期自動解除、期間轉發管理員）與管理員指令 `/status`、`/resume`、`/handoff`、`/help`
+- `src/handlers/handoff.ts` — `createHandoffService()`：SPEC 5.7 人工轉接（關鍵字 / 連續 2 則低信心 / `/handoff` 進入、24h 到期自動解除；進入時開 `handoff` 工單、期間訊息附加到工單並通知追問）與管理員指令 `/status`、`/resume`、`/handoff`、`/help`
 - `src/classifier/types.ts` — 五類 `categories`、zod `classificationSchema`、`Classifier` / `ClassifyInput` / `ClassifyResult` 型別
 - `src/classifier/knowledge.ts` — `loadKnowledge()`：讀 `knowledge/*.md`（排除 welcome.md）依檔名串接、快取；`resetKnowledgeCache()`
 - `src/classifier/prompt.ts` — `buildSystemBlocks()`：固定規則 block + 知識庫 block（cache_control）；改分類規則來這裡
@@ -63,8 +63,8 @@
 - `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（只負責派送：POST Cursor Automations webhook + `Authorization: Bearer`，body 含 `callback` 與 `instructions`，`buildDispatchBody()`）、`createGrokGateway(config)`；改派送 payload 或 instructions 來這裡
-- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed（push 使用者 / 管理員、寫 suggestions）、更新 `grok_tasks`
-- `src/grok/sweeper.ts` — `startGrokTaskSweeper()`：每分鐘把逾時的 `grok_tasks` 標 `expired`，service_question push 使用者 `grokTimeout` + 管理員；`sweepOnce()` 供測試
+- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed（push 使用者 / 管理員、寫 suggestions、service_question failed 開工單）、更新 `grok_tasks`；已關閉的 service_question 在 `GROK_FOLLOWUP_WINDOW_MS` 內再收到 done → 事後補充（push `grok_followup`、工單 `answered_by=grok`，SPEC-ADMIN §12.4）
+- `src/grok/sweeper.ts` — `startGrokTaskSweeper()`：每分鐘把逾時的 `grok_tasks` 標 `expired`，service_question push 使用者 `grokTimeout` + 開 `grok_timeout` 工單；同一輪也把 answered 工單超過 `TICKET_AUTO_CLOSE_MS` 自動 `closed`；`sweepOnce()` 供測試
 - `src/db/` — SQLite 連線、migrations、repositories
 - `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
 - `src/db/migrate.ts` — `runMigrations(db)`：`schema_migrations` 記錄、依版本套用、可重複執行
@@ -73,7 +73,13 @@
 - `src/db/repos.ts` — `createRepos(db)` 一次建立全部 repository
 - `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
 - `src/db/adminQueries.ts` — `createAdminQueriesRepo(db)`：管理端每次查詢一列（`insert` / `recent`），migration 003
-- `src/db/grokTasks.ts` — `createGrokTasksRepo(db)`：派送給 Cursor agent 的任務（`insert` / `get` / `setStatus` / `listExpired` / `countOpen`），migration 002
+- `src/db/grokTasks.ts` — `createGrokTasksRepo(db)`：派送給 Cursor agent 的任務（`insert` / `get` / `setStatus` / `recordFollowUp` / `listExpired` / `countOpen`），migration 002
+- `src/db/tickets.ts` — `createTicketsRepo(db)`：T15 工單（SPEC-ADMIN §12.2）：`openOrAppend`（每位客戶同時只一張 open，已有就附加 `\n---\n` 問題）/ `get` / `findOpenByUser` / `findActiveByUser` / `listOpen` / `markAnswered` / `close` / `autoClose` / `recentByUser`，migration 004
+- `src/tickets/` — T15 客戶端工單
+- `src/tickets/ids.ts` — `displayId(42)` → `T042`、`parseTicketId('T42' | 't042' | '42')`
+- `src/tickets/orderIds.ts` — `extractOrderIds(text)`：抓 `#YYYYMMDD-XXXXXXXX`（可帶 D / G 前綴）並正規化
+- `src/tickets/service.ts` — `createTicketService()`：`open()` 開單或附加 + 管理端通知（`[待回覆 T042]` / `[T042 追問]`，通知文字在 `texts.ts`）、`notifyFollowUp()`；jobs/handlers、grok callback、sweeper、handoff、message.ts 的開單點都經由它
+- `src/tickets/internalReplyRoute.ts` — `createInternalReplyRoute()`：客戶端 `POST /internal/reply`（管理端專人回覆用；token 503 / 401、zod 400、404、closed 409、push 失敗 502 工單維持 open；成功 push 客戶 reason `ticket_reply` 並標 `answered`）
 - `src/jobs/` — 背景任務佇列與 handlers
 - `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
 - `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`（zod 驗 payload、Null 時 skipped、先寫 `grok_tasks` 再派送、暫時性失敗重試、4xx 直接交人工）
@@ -92,6 +98,7 @@
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
 - `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕、push fallback、`start` / `stop`、`/grok/callback` 與 `/internal/notify` 掛載
+- `test/tickets/` — T15 工單：`helpers.ts`（直接 push 管理員的 ticket service、工單列）、`repo.test.ts`、`ids.test.ts`（id / 訂單編號）、`service.test.ts`（通知文字）、`message.test.ts`（open 工單時的 `ticketPending`）、`internalReplyRoute.test.ts`、`followup.test.ts`（callback 事後補充）
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）
 - `.env.admin`、`data-admin/` — 管理端容器的設定與 SQLite（gitignore）
 - `.dockerignore` — Docker build context 排除清單

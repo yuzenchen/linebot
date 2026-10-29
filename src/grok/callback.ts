@@ -10,17 +10,26 @@ import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../texts.js';
+import type { TicketService } from '../tickets/service.js';
 import { CALLBACK_TOKEN_HEADER } from './gateway.js';
+
+export const DEFAULT_GROK_FOLLOWUP_WINDOW_MS = 604800000;
+/** A closed service_question task accepts late `done` callbacks while `callbacks <=` this. */
+export const MAX_FOLLOWUP_CALLBACKS = 5;
 
 export interface GrokCallbackDeps {
   /** `GROK_CALLBACK_TOKEN`; without it the route answers 503. */
   token?: string;
-  repos: Pick<Repos, 'grokTasks' | 'suggestions'>;
+  /** With `tickets`, a late `done` (§12.4) answers the customer's open / answered ticket. */
+  repos: Pick<Repos, 'grokTasks' | 'suggestions'> & Partial<Pick<Repos, 'tickets'>>;
   replier: Pick<Replier, 'push'>;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
-    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN' | 'GROK_FOLLOWUP_WINDOW_MS'>>;
   /** Defaults to one built from `config` + `replier`. */
   adminNotifier?: AdminNotifier;
+  /** T15: when present, a failed service_question opens a ticket instead of a plain notice. */
+  tickets?: TicketService;
+  now?: () => Date;
   log?: Logger;
 }
 
@@ -52,6 +61,7 @@ function safeEqual(a: string, b: string): boolean {
 interface Payload {
   userId?: string;
   text?: string;
+  context?: { role: 'user' | 'assistant'; text: string }[];
   incidentId?: number;
   suggestionId?: number;
 }
@@ -76,6 +86,8 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
   const { repos, replier } = deps;
   const notifier =
     deps.adminNotifier ?? createAdminNotifier({ config: deps.config, replier, log: deps.log });
+  const now = deps.now ?? (() => new Date());
+  const followUpWindowMs = deps.config.GROK_FOLLOWUP_WINDOW_MS ?? DEFAULT_GROK_FOLLOWUP_WINDOW_MS;
   const app = new Hono();
 
   async function push(userId: string, text: string, reason: string, meta: object): Promise<void> {
@@ -114,8 +126,18 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
         await push(userId, custom as string, 'grok_answer', meta);
         return;
       case 'failed': {
-        const { text } = parsePayload(task.payload);
+        const { text, context } = parsePayload(task.payload);
         await push(userId, texts.grokUnavailable, 'grok_unavailable', meta);
+        if (deps.tickets) {
+          await deps.tickets.open({
+            userId,
+            source: 'grok_failed',
+            question: text ?? '',
+            context: Array.isArray(context) ? context : [],
+            grokTaskId: task.id,
+          });
+          return;
+        }
         const notice = adminServiceQuestionNotice({ userId, text: text ?? '' });
         await notifyAdmin(
           'service_question',
@@ -124,6 +146,39 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
         );
       }
     }
+  }
+
+  /**
+   * SPEC-ADMIN §12.4: a `done` with text for an already closed service_question, within the
+   * follow-up window and under the callback cap, is delivered as a late answer: it answers the
+   * customer's open / answered ticket when there is one, else is pushed directly.
+   */
+  async function applyLateFollowUp(
+    task: GrokTaskRow,
+    body: CallbackBody,
+    meta: object,
+  ): Promise<'followup' | 'push_failed' | undefined> {
+    const text = body.text?.trim();
+    if (task.type !== 'service_question' || body.status !== 'done' || !text || !task.user_id) {
+      return undefined;
+    }
+    const age = now().getTime() - new Date(task.updated_at).getTime();
+    if (age > followUpWindowMs || task.callbacks > MAX_FOLLOWUP_CALLBACKS) return undefined;
+    const ticket = repos.tickets?.findActiveByUser(task.user_id);
+    repos.grokTasks.recordFollowUp(task.id, text);
+    try {
+      await replier.push(task.user_id, [text], 'grok_followup');
+    } catch (err) {
+      log.error({ ...meta, ticketId: ticket?.id, err }, 'grok follow-up push failed');
+      return 'push_failed';
+    }
+    if (ticket && repos.tickets) {
+      repos.tickets.markAnswered(ticket.id, { by: 'grok', answer: text });
+      log.info({ ...meta, ticketId: ticket.id }, 'grok follow-up answered ticket');
+    } else {
+      log.info(meta, 'grok follow-up pushed');
+    }
+    return 'followup';
   }
 
   async function applyIncidentTriage(task: GrokTaskRow, body: CallbackBody, meta: object) {
@@ -194,6 +249,9 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
       return c.json({ error: 'unknown task' }, 404);
     }
     if (TERMINAL.has(task.status)) {
+      const late = await applyLateFollowUp(task, body, meta);
+      if (late === 'followup') return c.json({ ok: true, followup: true });
+      if (late === 'push_failed') return c.json({ ok: true, followup: true, warning: late });
       log.info({ ...meta, taskStatus: task.status }, 'grok callback ignored (task closed)');
       return c.json({ ok: true, ignored: true });
     }

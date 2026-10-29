@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Classifier } from '../../src/classifier/index.js';
 import { createHandoffService, HANDOFF_DURATION_MS } from '../../src/handlers/handoff.js';
 import { createTextMessageHandler } from '../../src/handlers/message.js';
-import { texts } from '../../src/texts.js';
+import { texts, ticketFollowUpNotice, ticketNotice } from '../../src/texts.js';
+import { ticketRows } from '../tickets/helpers.js';
 import {
   classification,
   fakeHealth,
@@ -55,7 +56,7 @@ function pushesTo(h: Harness, to: string): string[] {
 }
 
 describe('handoff', () => {
-  it('keyword enters handoff without classifying and notifies admin', async () => {
+  it('keyword enters handoff without classifying and opens a handoff ticket (T15)', async () => {
     const h = harness();
     const classify = vi.fn(async () => classification({}));
     const { handle } = make(h, classify);
@@ -69,12 +70,25 @@ describe('handoff', () => {
     expect(replyTexts(h)).toEqual([[texts.handoffEntered]]);
     const until = h.repos.users.get('U1')?.handoff_until;
     expect(until).toBe(new Date(T0.getTime() + HANDOFF_DURATION_MS).toISOString());
-    expect(pushReasons(h.db)).toEqual(['admin_handoff']);
-    const [notice] = pushesTo(h, ADMIN);
-    expect(notice).toContain('[轉人工] 使用者 U1');
-    expect(notice).toContain('- 請問運費');
-    expect(notice).toContain('- 我要找真人');
-    expect(notice).toContain('解除：/resume U1');
+    expect(pushReasons(h.db)).toEqual(['admin_ticket']);
+    expect(pushesTo(h, ADMIN)).toEqual([
+      ticketNotice({
+        ticketId: 'T001',
+        userId: 'U1',
+        question: '我要找真人',
+        recentMessages: ['請問運費', '我要找真人'],
+        orderIds: [],
+      }),
+    ]);
+    expect(ticketRows(h)).toEqual([
+      expect.objectContaining({
+        user_id: 'U1',
+        source: 'handoff',
+        status: 'open',
+        question: '我要找真人',
+        context: JSON.stringify(['請問運費', '我要找真人']),
+      }),
+    ]);
   });
 
   it('two low-confidence messages enter handoff; the next message is forwarded', async () => {
@@ -92,7 +106,8 @@ describe('handoff', () => {
     expect(replyTexts(h)[1]).toEqual([texts.serviceForwarded, texts.handoffEntered]);
     expect(h.repos.users.get('U1')?.low_conf_streak).toBe(0);
     expect(h.repos.users.get('U1')?.handoff_until).not.toBeNull();
-    expect(pushReasons(h.db)).toEqual(['admin_handoff']);
+    expect(pushReasons(h.db)).toEqual(['admin_ticket']);
+    expect(ticketRows(h)).toEqual([expect.objectContaining({ source: 'handoff', status: 'open' })]);
 
     classify.mockClear();
     h.api.replyMessage.mockClear();
@@ -100,9 +115,30 @@ describe('handoff', () => {
     expect(classify).not.toHaveBeenCalled();
     expect(h.api.replyMessage).not.toHaveBeenCalled();
     expect(h.api.showLoadingAnimation).toHaveBeenCalledTimes(2);
-    expect(pushReasons(h.db)).toEqual(['admin_handoff', 'admin_forward']);
-    expect(pushesTo(h, ADMIN).at(-1)).toBe('[人工中] U1：還在嗎');
+    expect(pushReasons(h.db)).toEqual(['admin_ticket', 'admin_ticket_followup']);
+    expect(pushesTo(h, ADMIN).at(-1)).toBe(
+      ticketFollowUpNotice({ ticketId: 'T001', userId: 'U1', text: '還在嗎' }),
+    );
     expect(pushesTo(h, 'U1')).toEqual([]);
+    expect(ticketRows(h)).toHaveLength(1);
+    expect(ticketRows(h)[0].question).toBe('就是那個\n---\n還在嗎');
+  });
+
+  it('forwarding without an open ticket (admin /handoff) opens a handoff ticket', async () => {
+    const h = harness();
+    const { handle } = make(
+      h,
+      vi.fn(async () => classification({})),
+    );
+    h.repos.users.upsert({ userId: 'Uxyz98765432' });
+    await handle(inbound(h.repos, '/handoff Uxyz', { userId: ADMIN }));
+    expect(ticketRows(h)).toHaveLength(0);
+
+    await handle(inbound(h.repos, '在嗎', { userId: 'Uxyz98765432' }));
+    expect(ticketRows(h)).toEqual([
+      expect.objectContaining({ user_id: 'Uxyz98765432', source: 'handoff', question: '在嗎' }),
+    ]);
+    expect(pushReasons(h.db)).toEqual(['handoff_admin', 'admin_ticket']);
   });
 
   it('expired handoff is inactive and cleared', async () => {
@@ -237,6 +273,7 @@ describe('handoff', () => {
 
     expect(replyTexts(h)).toEqual([[texts.handoffEntered]]);
     expect(h.repos.users.get('U1')?.handoff_until).not.toBeNull();
+    expect(ticketRows(h)).toHaveLength(1);
   });
 
   it('findByPrefix escapes LIKE wildcards', () => {

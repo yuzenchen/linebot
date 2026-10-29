@@ -13,6 +13,7 @@ const expectedTables = [
   'push_log',
   'grok_tasks',
   'admin_queries',
+  'tickets',
   'schema_migrations',
 ];
 
@@ -30,6 +31,7 @@ describe('runMigrations', () => {
       { version: 1, name: '001_init' },
       { version: 2, name: '002_grok_tasks' },
       { version: 3, name: '003_admin_queries' },
+      { version: 4, name: '004_tickets' },
     ]);
   });
 
@@ -46,6 +48,8 @@ describe('runMigrations', () => {
         'idx_incidents_status_created',
         'idx_grok_tasks_status_expires',
         'idx_admin_queries_user_created',
+        'idx_tickets_user_status',
+        'idx_tickets_status_updated',
       ]),
     );
   });

@@ -6,14 +6,13 @@ import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import {
-  adminForwardNotice,
   adminHandoffDone,
-  adminHandoffNotice,
   adminPrefixMismatch,
   adminResumeDone,
   adminStatus,
   texts,
 } from '../texts.js';
+import { createTicketService, type TicketService } from '../tickets/service.js';
 import type { TextMessageContext } from './dispatcher.js';
 import type { HandoffHook } from './message.js';
 
@@ -34,12 +33,15 @@ const RECENT_INBOUND = 3;
 const RECENT_SCAN = 20;
 
 export interface HandoffDeps {
-  repos: Pick<Repos, 'users' | 'messages' | 'pushLog' | 'jobs'> & Partial<Pick<Repos, 'grokTasks'>>;
+  repos: Pick<Repos, 'users' | 'messages' | 'pushLog' | 'jobs' | 'tickets'> &
+    Partial<Pick<Repos, 'grokTasks'>>;
   replier: Replier;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
     Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
   /** Defaults to one built from `config` + `replier`. */
   adminNotifier?: AdminNotifier;
+  /** T15: entering handoff opens a ticket; defaults to one built from `repos` + the notifier. */
+  tickets?: TicketService;
   now?: () => Date;
   log?: Logger;
 }
@@ -54,6 +56,8 @@ export function createHandoffService(deps: HandoffDeps) {
   // handoff state; they are still authorised by ADMIN_LINE_USER_ID.
   const adminId = config.ADMIN_LINE_USER_ID;
   const notifier = deps.adminNotifier ?? createAdminNotifier({ config, replier, log: deps.log });
+  const tickets =
+    deps.tickets ?? createTicketService({ repos, adminNotifier: notifier, log: deps.log });
 
   async function pushUser(userId: string, text: string, reason: string) {
     try {
@@ -77,15 +81,29 @@ export function createHandoffService(deps: HandoffDeps) {
     repos.users.resetLowConf(userId);
   }
 
-  /** Enters handoff, notifies admin, and returns the messages to send to the user. */
+  /** The customer's recent inbound texts as context turns; the last one is the current text. */
+  function recentContext(userId: string): { role: 'user'; text: string }[] {
+    return recentInbound(userId).map((text) => ({ role: 'user' as const, text }));
+  }
+
+  /**
+   * Enters handoff, opens (or appends to) the customer's ticket (`source=handoff`, T15) — whose
+   * notice reaches the admin bot — and returns the messages to send to the user.
+   */
   async function enter(userId: string, reason: string): Promise<string[]> {
     startHandoff(userId);
     log.info({ userId, reason }, 'handoff entered');
-    await notifier.notify({
-      kind: 'handoff',
-      text: adminHandoffNotice({ userId, reason, recentMessages: recentInbound(userId) }),
-      meta: { userId },
-    });
+    const context = recentContext(userId);
+    try {
+      await tickets.open({
+        userId,
+        source: 'handoff',
+        question: context.at(-1)?.text ?? reason,
+        context,
+      });
+    } catch (err) {
+      log.error({ userId, err }, 'handoff ticket failed');
+    }
     return [texts.handoffEntered];
   }
 
@@ -98,14 +116,21 @@ export function createHandoffService(deps: HandoffDeps) {
       log.info({ userId, until }, 'handoff expired');
       return false;
     },
+    /** Messages during handoff become ticket follow-ups (or open a handoff ticket if none is open). */
     async forward(ctx: TextMessageContext): Promise<void> {
       try {
         log.info({ userId: ctx.userId, messageId: ctx.messageId }, 'handoff: forwarding to admin');
-        await notifier.notify({
-          kind: 'forward',
-          text: adminForwardNotice({ userId: ctx.userId, text: ctx.text }),
-          meta: { userId: ctx.userId, messageId: ctx.messageId },
-        });
+        const open = repos.tickets.findOpenByUser(ctx.userId);
+        if (open) {
+          await tickets.notifyFollowUp(open, ctx.text);
+        } else {
+          await tickets.open({
+            userId: ctx.userId,
+            source: 'handoff',
+            question: ctx.text,
+            context: recentContext(ctx.userId),
+          });
+        }
       } catch (err) {
         log.error({ userId: ctx.userId, err }, 'handoff forward failed');
       }

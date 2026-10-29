@@ -20,6 +20,7 @@ export const texts = {
   grokTimeout: '專人系統這次沒有在時間內回覆，已改由人工處理，會再回覆你。',
   handoffEntered: '已為你轉接人工客服，請稍候，專人會在這裡回覆你。',
   handoffResumed: '人工客服處理完成，之後的問題可以繼續問我。',
+  ticketPending: '專人處理中，有結果會在這裡回覆你。',
   adminHelp:
     '管理員指令：\n/status 今日訊息、本月 push、待處理 jobs、人工中人數\n/resume <userId前8碼> 解除人工轉接\n/handoff <userId前8碼> 轉為人工 24 小時',
   adminOnly: '此帳號僅供內部使用。',
@@ -82,6 +83,38 @@ export function adminPrefixMismatch(prefix: string, count: number): string {
 /** Admin push when a service question could not be answered by Grok (SPEC 5.6). */
 export function adminServiceQuestionNotice(d: { userId: string; text: string }): string {
   return `[待人工回覆] 使用者 ${d.userId.slice(0, 8)} 問：${d.text}\n（Grok 未設定或無法回答）`;
+}
+
+function shortUserId(userId: string): string {
+  return userId.length > 8 ? `${userId.slice(0, 8)}…` : userId;
+}
+
+/** Admin notice when a ticket is opened (SPEC-ADMIN §12.2). */
+export function ticketNotice(d: {
+  ticketId: string;
+  userId: string;
+  question: string;
+  recentMessages: string[];
+  orderIds: string[];
+}): string {
+  const lines = [
+    `[待回覆 ${d.ticketId}] 客戶 ${shortUserId(d.userId)}`,
+    `問：${d.question}`,
+    '最近對話：',
+    ...d.recentMessages.map((t) => `- ${t}`),
+  ];
+  if (d.orderIds.length > 0) lines.push(`訂單：${d.orderIds.join('、')}`);
+  lines.push(`回覆方式：在這裡打「回覆 ${d.ticketId} <內容>」`);
+  return lines.join('\n');
+}
+
+/** Admin notice when a customer with an open ticket writes again. */
+export function ticketFollowUpNotice(d: {
+  ticketId: string;
+  userId: string;
+  text: string;
+}): string {
+  return `[${d.ticketId} 追問] 客戶 ${shortUserId(d.userId)}\n${d.text}`;
 }
 
 /** Admin push carrying Grok's incident triage. */

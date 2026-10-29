@@ -1,16 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GrokTaskType } from '../../src/grok/gateway.js';
 import { createApp } from '../../src/server.js';
-import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../../src/texts.js';
+import {
+  adminServiceQuestionNotice,
+  adminTriageNotice,
+  texts,
+  ticketNotice,
+} from '../../src/texts.js';
 import { harness, pushReasons, sentTexts, silent } from '../handlers/helpers.js';
+import { ticketRows, ticketService } from '../tickets/helpers.js';
 
 const TOKEN = 'cb-test';
 const ADMIN = 'Uadmin000000';
 const USER = 'Uuser1234567';
 
-function setup(opts: { token?: string | undefined; admin?: string } = {}) {
+function setup(opts: { token?: string | undefined; admin?: string; tickets?: boolean } = {}) {
   const h = harness();
   const token = 'token' in opts ? opts.token : TOKEN;
+  const admin = opts.admin ?? ADMIN;
   const app = createApp({
     channelSecret: 'line-secret',
     repos: h.repos,
@@ -19,7 +26,8 @@ function setup(opts: { token?: string | undefined; admin?: string } = {}) {
       token,
       repos: h.repos,
       replier: h.replier,
-      config: { ADMIN_LINE_USER_ID: opts.admin ?? ADMIN },
+      config: { ADMIN_LINE_USER_ID: admin },
+      tickets: opts.tickets === false ? undefined : ticketService(h, admin),
       log: silent,
     },
   });
@@ -117,7 +125,7 @@ describe('POST /grok/callback: service_question', () => {
     expect(s.repos.grokTasks.get(id)!.status).toBe('sent');
   });
 
-  it('done pushes the answer, closes the task, and a later callback is ignored', async () => {
+  it('done pushes the answer, closes the task; a later done within the window is a follow-up (T15)', async () => {
     const s = setup();
     const id = s.insert('service_question', question);
     const res = await s.post({ taskId: id, status: 'done', text: '已出貨，預計明天到。' });
@@ -132,15 +140,46 @@ describe('POST /grok/callback: service_question', () => {
 
     const again = await s.post({ taskId: id, status: 'done', text: '再一次' });
     expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ ok: true, ignored: true });
-    expect(s.api.pushMessage).toHaveBeenCalledTimes(1);
+    expect(await again.json()).toEqual({ ok: true, followup: true });
+    expect(pushReasons(s.db)).toEqual(['grok_answer', 'grok_followup']);
+    // A later `failed` or `processing` on the closed task is still ignored.
+    const failed = await s.post({ taskId: id, status: 'failed', text: 'x' });
+    expect(await failed.json()).toEqual({ ok: true, ignored: true });
+    expect(s.api.pushMessage).toHaveBeenCalledTimes(2);
   });
 
-  it('failed tells the user and the admin', async () => {
+  it('failed tells the user and opens a grok_failed ticket (T15)', async () => {
     const s = setup();
-    const id = s.insert('service_question', question);
+    const id = s.insert('service_question', {
+      ...question,
+      context: [{ role: 'user', text: '嗨' }],
+    });
     await s.post({ taskId: id, status: 'failed', text: '找不到訂單系統' });
     expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([USER, ADMIN]);
+    expect(sentTexts(s.api)).toEqual([
+      { via: 'push', text: texts.grokUnavailable },
+      {
+        via: 'push',
+        text: ticketNotice({
+          ticketId: 'T001',
+          userId: USER,
+          question: question.text,
+          recentMessages: ['嗨', question.text],
+          orderIds: [],
+        }),
+      },
+    ]);
+    expect(pushReasons(s.db)).toEqual(['grok_unavailable', 'admin_ticket']);
+    expect(s.repos.grokTasks.get(id)!.status).toBe('failed');
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({ source: 'grok_failed', grok_task_id: id, status: 'open' }),
+    ]);
+  });
+
+  it('failed without a ticket service falls back to the plain admin notice', async () => {
+    const s = setup({ tickets: false });
+    const id = s.insert('service_question', question);
+    await s.post({ taskId: id, status: 'failed', text: '找不到訂單系統' });
     expect(sentTexts(s.api)).toEqual([
       { via: 'push', text: texts.grokUnavailable },
       {
@@ -149,7 +188,7 @@ describe('POST /grok/callback: service_question', () => {
       },
     ]);
     expect(pushReasons(s.db)).toEqual(['grok_unavailable', 'admin_service_question']);
-    expect(s.repos.grokTasks.get(id)!.status).toBe('failed');
+    expect(ticketRows(s)).toHaveLength(0);
   });
 
   it('still answers 200 when the LINE push fails', async () => {

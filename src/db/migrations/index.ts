@@ -126,8 +126,29 @@ CREATE TABLE IF NOT EXISTS admin_queries (
 CREATE INDEX IF NOT EXISTS idx_admin_queries_user_created ON admin_queries (user_id, created_at);
 `;
 
+const tickets = `
+CREATE TABLE IF NOT EXISTS tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT,
+  source TEXT CHECK (source IN ('grok_failed', 'grok_timeout', 'grok_unconfigured', 'handoff')),
+  question TEXT,
+  context TEXT,
+  order_ids TEXT,
+  grok_task_id TEXT,
+  status TEXT CHECK (status IN ('open', 'answered', 'closed')) DEFAULT 'open',
+  answered_by TEXT,
+  answer TEXT,
+  answered_at TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_user_status ON tickets (user_id, status);
+CREATE INDEX IF NOT EXISTS idx_tickets_status_updated ON tickets (status, updated_at);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
   { version: 3, name: '003_admin_queries', sql: adminQueries },
+  { version: 4, name: '004_tickets', sql: tickets },
 ];

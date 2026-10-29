@@ -75,6 +75,10 @@ export const configSchema = z.object({
   INTERNAL_NOTIFY_TOKEN: optionalString,
   /** Where the enduser bot sends admin notifications (T13); e.g. `http://linebot-admin:8090/internal/notify`. */
   ADMIN_NOTIFY_URL: z.preprocess(emptyToUndefined, z.url().optional()),
+  /** Answered tickets with no customer follow-up for this long are closed (T15; default 24 h). */
+  TICKET_AUTO_CLOSE_MS: intWithDefault(86400000),
+  /** How long after a Grok task closed a late `done` callback is still delivered (T15; default 7 d). */
+  GROK_FOLLOWUP_WINDOW_MS: intWithDefault(604800000),
 });
 
 /**

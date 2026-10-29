@@ -7,33 +7,44 @@ import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../texts.js';
+import type { TicketService } from '../tickets/service.js';
+
+export const DEFAULT_TICKET_AUTO_CLOSE_MS = 86400000;
 
 export interface GrokTaskSweeperDeps {
-  repos: Pick<Repos, 'grokTasks'>;
+  /** With `tickets`, each sweep also auto-closes answered tickets (T15). */
+  repos: Pick<Repos, 'grokTasks'> & Partial<Pick<Repos, 'tickets'>>;
   replier: Pick<Replier, 'push'>;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
-    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN' | 'TICKET_AUTO_CLOSE_MS'>>;
   /** Defaults to one built from `config` + `replier`. */
   adminNotifier?: AdminNotifier;
+  /** T15: when present, an expired service_question opens a ticket instead of a plain notice. */
+  tickets?: TicketService;
   /** Default 60000. */
   intervalMs?: number;
   now?: () => Date;
   log?: Logger;
 }
 
-function payloadText(row: GrokTaskRow): string {
+type PayloadContext = { role: 'user' | 'assistant'; text: string }[];
+
+function payloadOf(row: GrokTaskRow): { text: string; context: PayloadContext } {
   try {
-    const v = JSON.parse(row.payload ?? 'null') as { text?: unknown } | null;
-    return typeof v?.text === 'string' ? v.text : '';
+    const v = JSON.parse(row.payload ?? 'null') as { text?: unknown; context?: unknown } | null;
+    return {
+      text: typeof v?.text === 'string' ? v.text : '',
+      context: Array.isArray(v?.context) ? (v.context as PayloadContext) : [],
+    };
   } catch {
-    return '';
+    return { text: '', context: [] };
   }
 }
 
 /**
  * Marks open grok_tasks whose `expires_at` passed as `expired` and falls back to humans:
- * service_question → user `grokTimeout` + admin notice; incident_triage → admin notice;
- * summarize_suggestion → log only.
+ * service_question → user `grokTimeout` + ticket (or admin notice); incident_triage → admin
+ * notice; summarize_suggestion → log only. Each pass also auto-closes idle answered tickets.
  */
 export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
   const { repos, replier } = deps;
@@ -55,9 +66,19 @@ export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
     const meta = { taskId: row.id, type: row.type, from: row.status, expiresAt: row.expires_at };
     repos.grokTasks.setStatus(row.id, 'expired');
     log.warn(meta, 'grok task expired');
-    const text = payloadText(row);
+    const { text, context } = payloadOf(row);
     if (row.type === 'service_question' && row.user_id) {
       await push(row.user_id, texts.grokTimeout, 'grok_timeout', meta);
+      if (deps.tickets) {
+        await deps.tickets.open({
+          userId: row.user_id,
+          source: 'grok_timeout',
+          question: text,
+          context,
+          grokTaskId: row.id,
+        });
+        return;
+      }
       await notifier.notify({
         kind: 'service_question',
         text: adminServiceQuestionNotice({ userId: row.user_id, text }),
@@ -78,14 +99,22 @@ export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
     }
   }
 
+  function autoCloseTickets(): void {
+    if (!repos.tickets) return;
+    const olderThanMs = deps.config.TICKET_AUTO_CLOSE_MS ?? DEFAULT_TICKET_AUTO_CLOSE_MS;
+    const closed = repos.tickets.autoClose(now(), olderThanMs);
+    if (closed > 0) log.info({ closed, olderThanMs }, 'answered tickets auto-closed');
+  }
+
   let sweeping = false;
-  /** One pass; never throws. Returns the number of tasks expired. */
+  /** One pass; never throws. Returns the number of tasks expired (tickets closed are logged). */
   async function sweepOnce(): Promise<number> {
     if (sweeping) return 0;
     sweeping = true;
     try {
       const rows = repos.grokTasks.listExpired(now());
       for (const row of rows) await expire(row);
+      autoCloseTickets();
       return rows.length;
     } catch (err) {
       log.error({ err }, 'grok sweeper failed');

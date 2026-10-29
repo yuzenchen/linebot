@@ -10,6 +10,7 @@ import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, texts } from '../texts.js';
+import type { TicketService } from '../tickets/service.js';
 import { type Job, type JobHandlers, SkipJob } from './queue.js';
 
 export interface JobHandlerDeps {
@@ -20,6 +21,8 @@ export interface JobHandlerDeps {
     Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
   /** Defaults to one built from `config` + `replier`. */
   adminNotifier?: AdminNotifier;
+  /** T15: when present, an unanswerable service question opens a ticket instead of a plain notice. */
+  tickets?: TicketService;
   /** Must match the JobQueue's maxAttempts. Default 5. */
   maxAttempts?: number;
   now?: () => Date;
@@ -82,7 +85,9 @@ class TransientGrokError extends Error {
   }
 }
 
-type Dispatch = { status: 'accepted' } | { status: 'transient' } | { status: 'failed' };
+type Dispatch = { taskId: string } & (
+  { status: 'accepted' } | { status: 'transient' } | { status: 'failed' }
+);
 
 /**
  * SPEC 5.4–5.6 background jobs. Each handler only *dispatches* to the Cursor agent; the answer
@@ -97,13 +102,30 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
   const notifier = deps.adminNotifier ?? createAdminNotifier({ config, replier, log: deps.log });
   const timeoutMs = config.GROK_TASK_TIMEOUT_MS;
 
-  async function notifyServiceQuestionFallback(userId: string, text: string): Promise<void> {
-    await replier.push(userId, [texts.grokUnavailable], 'grok_unavailable');
-    await notifier.notify({
-      kind: 'service_question',
-      text: adminServiceQuestionNotice({ userId, text }),
-      meta: { userId },
-    });
+  /** User gets `grokUnavailable`; the admin side gets a ticket (T15) or, without one, a notice. */
+  async function notifyServiceQuestionFallback(
+    p: z.infer<typeof serviceQuestionPayload>,
+    source: 'grok_unconfigured' | 'grok_failed',
+    grokTaskId?: string,
+  ): Promise<void> {
+    // Open the ticket (or notify) BEFORE pushing the user: a blocked bot must not lose the ticket.
+    // On a push failure the job retries and openOrAppend dedupes the identical question.
+    if (deps.tickets) {
+      await deps.tickets.open({
+        userId: p.userId,
+        source,
+        question: p.text,
+        context: p.context,
+        grokTaskId,
+      });
+    } else {
+      await notifier.notify({
+        kind: 'service_question',
+        text: adminServiceQuestionNotice({ userId: p.userId, text: p.text }),
+        meta: { userId: p.userId },
+      });
+    }
+    await replier.push(p.userId, [texts.grokUnavailable], 'grok_unavailable');
   }
 
   /**
@@ -128,15 +150,15 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
     const ctx = { jobId: job.id, taskId: id, type: task.type, attempts: job.attempts };
     if (res.ok) {
       log.info(ctx, 'grok task dispatched; waiting for callback');
-      return { status: 'accepted' };
+      return { taskId: id, status: 'accepted' };
     }
     repos.grokTasks.setStatus(id, 'failed', res.error);
     if (isTransient(res)) {
       log.warn({ ...ctx, error: res.error }, 'grok dispatch failed (transient)');
-      return { status: 'transient' };
+      return { taskId: id, status: 'transient' };
     }
     log.error({ ...ctx, error: res.error }, 'grok dispatch rejected');
-    return { status: 'failed' };
+    return { taskId: id, status: 'failed' };
   }
 
   return {
@@ -144,7 +166,7 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
       const p = parsePayload(serviceQuestionPayload, job);
       if (!grok.configured) {
         log.warn({ jobId: job.id }, 'grok not configured; service question goes to admin');
-        await notifyServiceQuestionFallback(p.userId, p.text);
+        await notifyServiceQuestionFallback(p, 'grok_unconfigured');
         throw new SkipJob('grok_not_configured');
       }
       const d = await dispatch(job, p.userId, {
@@ -157,7 +179,7 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
         throw new TransientGrokError('dispatch');
       }
       // Final attempt of a transient failure, or a hard rejection: tell user + admin.
-      await notifyServiceQuestionFallback(p.userId, p.text);
+      await notifyServiceQuestionFallback(p, 'grok_failed', d.taskId);
       if (d.status === 'transient') throw new TransientGrokError('dispatch');
     },
 

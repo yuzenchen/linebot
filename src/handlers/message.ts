@@ -7,8 +7,9 @@ import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
 import { MAX_MESSAGES, type Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
-import type { AdminNotifier } from '../notify/adminNotifier.js';
+import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { texts } from '../texts.js';
+import { createTicketService, type TicketService } from '../tickets/service.js';
 import type { TextMessageContext } from './dispatcher.js';
 import { createFeatureHandler } from './feature.js';
 import type { HandoffService } from './handoff.js';
@@ -36,6 +37,8 @@ export interface MessageDeps {
   handoff?: HandoffHook;
   /** T7: full handoff service (admin commands, keyword / low-confidence entry); its hook wins over `handoff`. */
   handoffService?: HandoffService;
+  /** T15: follow-ups on an open ticket; defaults to one built from `repos` + the admin notifier. */
+  tickets?: TicketService;
   now?: () => Date;
   log?: Logger;
 }
@@ -52,6 +55,13 @@ export function createTextMessageHandler(
   const handleFeatureRequest = createFeatureHandler(deps);
   const handoffService = deps.handoffService;
   const handoff = handoffService?.hook ?? deps.handoff;
+  const tickets =
+    deps.tickets ??
+    createTicketService({
+      repos,
+      adminNotifier: deps.adminNotifier ?? createAdminNotifier({ config, replier, log: deps.log }),
+      log: deps.log,
+    });
 
   function buildContext(userId: string, messageId: number): ContextMessage[] {
     const rows = repos.messages.recent(userId, config.CONTEXT_MESSAGES + 1);
@@ -69,7 +79,14 @@ export function createTextMessageHandler(
     switch (c.category) {
       case 'kb_answer':
         return [c.answer ?? texts.serviceForwarded];
-      case 'service_related':
+      case 'service_related': {
+        // SPEC-ADMIN §12.2: a customer with an open ticket is not sent to Grok again.
+        const open = repos.tickets.findOpenByUser(ctx.userId);
+        if (open) {
+          log.info({ userId: ctx.userId, ticketId: open.id }, 'service question on open ticket');
+          await tickets.notifyFollowUp(open, ctx.text);
+          return [texts.ticketPending];
+        }
         jobs.enqueue('service_question', {
           userId: ctx.userId,
           messageId: ctx.messageId,
@@ -77,6 +94,7 @@ export function createTextMessageHandler(
           context,
         });
         return [texts.serviceForwarded];
+      }
       case 'incident_report':
         return handleIncident(ctx, context);
       case 'feature_request':

@@ -133,7 +133,7 @@ Pi 上啟動第二個容器、Cloudflare hostname 與 WAF 例外、LINE 管理�
 
 ## T15 客戶端工單（Careful）— 依賴：T13
 
-- [ ] 狀態
+- [x] 狀態（2026-10-30 接受；orchestrator 調整為先開工單再 push 客戶）
 
 migration 004 `tickets`；repo；開單點（jobs/handlers Null 與非暫時性失敗、callback failed、sweeper 逾時、handoff 進入）改為「開單或附加 + 通知」；`message.ts` 在分類後對 `service_related` 檢查 open 工單 → `ticketPending` 並通知追問；`POST /internal/reply`（token、zod、push、工單 answered、messages out）；24 小時自動關單（併入 sweeper 迴圈）；callback 7 天內事後 `done` 的處理（12.4）。測試涵蓋 12.6 前三項與第五、六、七項的客戶端部分。
 

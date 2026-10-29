@@ -7,8 +7,9 @@ import {
 } from '../../src/grok/gateway.js';
 import { createJobHandlers } from '../../src/jobs/handlers.js';
 import { JobQueue } from '../../src/jobs/queue.js';
-import { adminServiceQuestionNotice, texts } from '../../src/texts.js';
+import { adminServiceQuestionNotice, texts, ticketNotice } from '../../src/texts.js';
 import { harness, healthResult, pushReasons, sentTexts, silent } from '../handlers/helpers.js';
+import { ticketRows, ticketService } from '../tickets/helpers.js';
 
 const ADMIN = 'Uadmin000000';
 const USER = 'Uuser1234567';
@@ -24,7 +25,7 @@ function fakeGrok(
   };
 }
 
-function setup(grok: GrokGateway, admin: string | null = ADMIN) {
+function setup(grok: GrokGateway, admin: string | null = ADMIN, opts: { tickets?: boolean } = {}) {
   const h = harness();
   // baseDelayMs 0: a retried job is runnable again on the next tick.
   const queue = new JobQueue(h.repos.jobs, { logger: silent, baseDelayMs: 0, maxAttempts: 5 });
@@ -34,6 +35,7 @@ function setup(grok: GrokGateway, admin: string | null = ADMIN) {
       replier: h.replier,
       grok,
       config: { ADMIN_LINE_USER_ID: admin ?? undefined, GROK_TASK_TIMEOUT_MS: TIMEOUT_MS },
+      tickets: opts.tickets === false ? undefined : ticketService(h, admin ?? undefined),
       maxAttempts: 5,
       now: () => T0,
       log: silent,
@@ -62,6 +64,13 @@ const serviceQuestion = {
   text: '我的訂單到哪了？',
   context: [{ role: 'user', text: '你好' }],
 };
+const serviceQuestionTicketNotice = ticketNotice({
+  ticketId: 'T001',
+  userId: USER,
+  question: serviceQuestion.text,
+  recentMessages: ['你好', serviceQuestion.text],
+  orderIds: [],
+});
 const triage = {
   userId: USER,
   incidentId: 3,
@@ -72,7 +81,7 @@ const triage = {
 };
 
 describe('job handlers with NullGrokGateway', () => {
-  it('service_question informs user and admin, then skips', async () => {
+  it('service_question informs the user, opens a grok_unconfigured ticket (T15), then skips', async () => {
     const s = setup(new NullGrokGateway());
     const id = s.queue.enqueue('service_question', serviceQuestion);
     await s.queue.tick();
@@ -80,22 +89,41 @@ describe('job handlers with NullGrokGateway', () => {
     expect(job.status).toBe('skipped');
     expect(job.lastError).toBe('grok_not_configured');
     expect(sentTexts(s.api)).toEqual([
+      { via: 'push', text: serviceQuestionTicketNotice },
       { via: 'push', text: texts.grokUnavailable },
-      {
-        via: 'push',
-        text: adminServiceQuestionNotice({ userId: USER, text: serviceQuestion.text }),
-      },
     ]);
-    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([USER, ADMIN]);
-    expect(pushReasons(s.db)).toEqual(['grok_unavailable', 'admin_service_question']);
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([ADMIN, USER]);
+    expect(pushReasons(s.db)).toEqual(['admin_ticket', 'grok_unavailable']);
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({
+        user_id: USER,
+        source: 'grok_unconfigured',
+        question: serviceQuestion.text,
+        grok_task_id: null,
+        status: 'open',
+      }),
+    ]);
   });
 
-  it('service_question without admin id only pushes the user', async () => {
+  it('service_question without a ticket service sends the plain admin notice', async () => {
+    const s = setup(new NullGrokGateway(), ADMIN, { tickets: false });
+    s.queue.enqueue('service_question', serviceQuestion);
+    await s.queue.tick();
+    expect(sentTexts(s.api)[0]).toEqual({
+      via: 'push',
+      text: adminServiceQuestionNotice({ userId: USER, text: serviceQuestion.text }),
+    });
+    expect(pushReasons(s.db)).toEqual(['admin_service_question', 'grok_unavailable']);
+    expect(ticketRows(s)).toHaveLength(0);
+  });
+
+  it('service_question without admin id only pushes the user (ticket still opened)', async () => {
     const s = setup(new NullGrokGateway(), null);
     const id = s.queue.enqueue('service_question', serviceQuestion);
     await s.queue.tick();
     expect(s.repos.jobs.get(id)!.status).toBe('skipped');
     expect(pushReasons(s.db)).toEqual(['grok_unavailable']);
+    expect(ticketRows(s)).toHaveLength(1);
   });
 
   it('incident_triage skips without pushing', async () => {
@@ -173,20 +201,20 @@ describe('job handlers with a configured gateway', () => {
     expect(s.repos.grokTasks.countOpen()).toBe(1);
   });
 
-  it('401 (non-transient) marks the task failed, informs user and admin, and finishes', async () => {
+  it('401 (non-transient) marks the task failed, informs the user, opens a grok_failed ticket', async () => {
     const s = setup(fakeGrok({ ok: false, error: 'http_401', transient: false }));
     const id = s.queue.enqueue('service_question', serviceQuestion);
     await s.queue.tick();
     expect(s.repos.jobs.get(id)!.status).toBe('done');
     expect(taskRows(s)[0]).toMatchObject({ status: 'failed', last_text: 'http_401' });
     expect(sentTexts(s.api)).toEqual([
+      { via: 'push', text: serviceQuestionTicketNotice },
       { via: 'push', text: texts.grokUnavailable },
-      {
-        via: 'push',
-        text: adminServiceQuestionNotice({ userId: USER, text: serviceQuestion.text }),
-      },
     ]);
-    expect(pushReasons(s.db)).toEqual(['grok_unavailable', 'admin_service_question']);
+    expect(pushReasons(s.db)).toEqual(['admin_ticket', 'grok_unavailable']);
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({ source: 'grok_failed', grok_task_id: taskRows(s)[0]!.id }),
+    ]);
   });
 
   it('500 (transient) marks the task failed, retries silently, then informs on the final attempt', async () => {
@@ -211,8 +239,11 @@ describe('job handlers with a configured gateway', () => {
     // One grok_tasks row per attempt, all failed; none left open.
     expect(taskRows(s).map((r) => r.status)).toEqual(Array<string>(5).fill('failed'));
     expect(s.repos.grokTasks.countOpen()).toBe(0);
-    expect(pushReasons(s.db)).toEqual(['grok_unavailable', 'admin_service_question']);
-    expect(sentTexts(s.api)[0]).toEqual({ via: 'push', text: texts.grokUnavailable });
+    expect(pushReasons(s.db)).toEqual(['admin_ticket', 'grok_unavailable']);
+    expect(sentTexts(s.api).at(-1)).toEqual({ via: 'push', text: texts.grokUnavailable });
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({ source: 'grok_failed', grok_task_id: taskRows(s)[4]!.id }),
+    ]);
   });
 
   it('incident_triage dispatches with health and pushes nothing yet', async () => {
