@@ -1,6 +1,6 @@
 # 第二階段：管理端 bot 規格（草稿，2026-10-30）
 
-狀態：討論中，未實作。第一階段（客戶端 bot）規格見 `SPEC.md`，本文件只寫差異與新增。
+狀態：2026-10-30 使用者核准，實作中。第一階段（客戶端 bot）規格見 `SPEC.md`，本文件只寫差異與新增。
 
 ## 1. 目標與範圍
 
@@ -122,9 +122,13 @@ API 回傳完整 `customer`（姓名、電話、email、IG、地址）。bot 回
 - [ ] 「LINE Pay 付完款訂單沒更新」送到 Cursor，callback 結果推回管理端帳號。
 - [ ] Pi 上第二個容器啟動，`linebot-admin.yuzen.tw/health` 回 200，LINE Verify 通過。
 
-## 11. 待使用者決定
+## 11. 使用者決定（2026-10-30）
 
-- [ ] 管理端 LINE 官方帳號：新建一個（建議），還是沿用測試帳號？
-- [ ] 店家老闆的 LINE userId。
-- [ ] 請 wa'mahouse 後端建立 bot 專用 admin 帳號；是否同時排程做 viewer 角色。
-- [ ] 第一階段的管理通知是否全部搬到管理端帳號。
+- [x] 管理端 LINE 官方帳號：**新建一個**（使用者稍後建立，程式先寫）。
+- [ ] 店家老闆的 LINE userId：之後提供。
+- [x] 已向 wa'mahouse 後端提出：建立 bot 專用 admin 帳號、新增 viewer 唯讀角色。
+- [x] 第一階段的管理通知**全部搬到管理端帳號**。
+
+### 管理通知的傳遞方式（T13 定案）
+
+客戶端容器不持有管理端 channel token。客戶端 bot 把通知 `POST http://linebot-admin:8091/internal/notify`（同一個 docker network），header `x-internal-token`（兩個容器共用的 `INTERNAL_NOTIFY_TOKEN`），body `{ kind, text, meta }`；管理端收到後 push 給 `ADMIN_USER_IDS` 全部成員並記 `push_log`。管理端未啟動或回非 2xx 時，客戶端退回原本的 `ADMIN_LINE_USER_ID` push（若有設）並記 warn。`/internal/notify` 不經 tunnel 對外（Cloudflare 只路由 `/webhook` 與 `/grok/callback` 到管理端；其餘路徑仍被 WAF 擋），且 token 不符回 401。
