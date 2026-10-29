@@ -295,6 +295,6 @@ interface GrokGateway { readonly configured: boolean; run(task: GrokTask): Promi
 
 - [x] Grok bot webhook：Cursor Automations，Bearer 認證，非同步多次 callback（見 5.6）。
 - [x] `ADMIN_LINE_USER_ID`：已取得，填在 `.env`（不進版控）。
-- [ ] Cloudflare Tunnel 的子網域名稱。
+- [x] Cloudflare Tunnel 子網域：`linebot.yuzen.tw`（Pi 上 `~/linebot`，2026-10-30 部署）。
 - [ ] 知識庫第一版內容校正。
 - [ ] Messaging API channel 的建立（與 `PetEshop Info` 裡的 LINE Pay / LINE Login channel 不同，需要另外在 LINE Developers 建 Messaging API channel，並在 LINE Official Account Manager 關閉「自動回應訊息」、開啟 Webhook）。
