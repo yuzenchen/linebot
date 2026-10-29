@@ -21,8 +21,15 @@ export function createMessagesRepo(db: Database) {
     'SELECT * FROM (SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?) ORDER BY created_at ASC, id ASC',
   );
   const countSince = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE created_at >= ?');
+  const stats = db.prepare(
+    'SELECT user_id AS userId, COUNT(*) AS count, MAX(created_at) AS lastAt FROM messages GROUP BY user_id ORDER BY lastAt DESC',
+  );
 
   return {
+    /** Message count and latest message time per user, newest first. */
+    statsByUser(): { userId: string; count: number; lastAt: string }[] {
+      return stats.all() as { userId: string; count: number; lastAt: string }[];
+    },
     insert(m: {
       userId: string;
       direction: Direction;

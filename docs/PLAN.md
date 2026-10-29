@@ -62,7 +62,7 @@
 
 ## T8 CLI 與維運（Light）— 依賴：T2、T5
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 `src/cli/export-suggestions.ts`（Markdown 表格到 `${DATA_DIR}/exports/`）、`src/cli/list-users.ts`（userId、display_name、最後訊息時間，供查管理員 id）。README：本機啟動、cloudflared quick tunnel 步驟、LINE Developers 設定清單、Pi 部署步驟（SPEC 3.3）、備份、常見錯誤。
 
