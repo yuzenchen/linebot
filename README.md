@@ -98,3 +98,7 @@ CLI 讀 `.env`（若存在）與 `DATA_DIR`，不需要 LINE 金鑰。容器內�
 - **401 bad signature**：`LINE_CHANNEL_SECRET` 填錯（或改 `.env` 後沒重建容器）。
 - **容器一直重啟**：`docker compose logs` 看原因，常見是 `.env` 缺必填變數。
 - **Grok 未設定**：`GROK_WEBHOOK_URL` 留空時，服務相關問題會 push「此問題已轉交人工，會再回覆你」並通知管理員（`ADMIN_LINE_USER_ID` 也空則只寫 log）。
+
+## 管理端 bot（第二階段）
+
+同一套程式以 `BOT_PROFILE=admin` 跑第二個容器 `linebot-admin`，給管理員與店家老闆用自然語言查訂單、庫存與系統狀況（唯讀，後台 viewer 角色）。設定檔 `.env.admin`、資料夾 `data-admin/`，啟動加 `--profile admin`。規格見 `docs/SPEC-ADMIN.md`，LINE 帳號與 Cloudflare 設定見 `docs/LINE-SETUP.md` 第 8 節。

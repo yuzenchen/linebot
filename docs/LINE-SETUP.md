@@ -108,3 +108,16 @@ cloudflared tunnel --url http://localhost:8090
 - 建好後把它拖到台灣封鎖規則上方。
 - 只放行這兩條路徑：`/webhook` 另有簽章驗證，`/grok/callback` 另有 token 驗證；`/health` 與其他路徑對國外仍封鎖。
 - 若 Verify 仍 403，到 Security → Events 看該筆的 ASN，不是 38631 就加進表達式。
+
+## 8. 管理端 bot 的 LINE 帳號（第二階段）
+
+管理端是**另一個**官方帳號，只給管理員與店家老闆用。步驟與第 1 到 3 節相同，差異如下：
+
+- 帳號名稱例如「王媽媽後台小幫手」；建議在 LINE Official Account Manager 的「帳號設定」把「加入好友」設為需審核或不公開搜尋。
+- 「回應設定」：聊天關、Webhook 開、自動回應關、歡迎訊息關（歡迎詞由 bot 送）。
+- Developers Console：Webhook URL 填 `https://linebot-admin.yuzen.tw/webhook`，Use webhook 開，群組加入關。
+- 取得的 Channel secret 與長期 token 填進 **Pi 上的 `~/linebot/.env.admin`**（不是 `.env`）：`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`。
+- Cloudflare：Zero Trust Public Hostname 新增 `linebot-admin` → `http://linebot-admin:8090`；第 7 節的 WAF Skip 規則表達式把 `http.host eq "linebot.yuzen.tw"` 改成 `http.host in {"linebot.yuzen.tw" "linebot-admin.yuzen.tw"}`。
+- 啟動：在 Pi 上 `docker compose -f docker-compose.pi.yml --profile admin up -d --build`，然後 Verify。
+- 店家老闆加好友後，用客戶端 bot 的 `npm run list-users` 或管理端容器的 log 取得他的 userId，加進 `.env.admin` 的 `ADMIN_USER_IDS`（逗號分隔），`--force-recreate linebot-admin`。
+- 最後在客戶端 `.env` 把 `ADMIN_NOTIFY_URL` 那行的 `#` 拿掉並 `--force-recreate linebot`，通知就會改送管理端帳號。
