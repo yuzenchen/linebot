@@ -76,7 +76,7 @@ Grok bot 確認為 Cursor Automations webhook：Bearer 認證、派送後由 age
 
 ## T9 整體驗證（Light）— 依賴：T1–T8
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受，見 docs/VERIFY.md）
 
 執行 `npm run lint && npm test && npm run build`，`docker compose up -d --build` 後跑 MVP 完成定義（SPEC 第 10 節）中不需要真實 LINE 帳號的項目：`/health`、簽章測試、重送去重、無 key 規則式回覆（以 curl 模擬 webhook body）。輸出一份檢查結果到 `docs/VERIFY.md`。需要真實 LINE 帳號與 Pi 的項目留給使用者，README 提供步驟。
 
