@@ -17,7 +17,14 @@ import type { TextMessageContext } from './dispatcher.js';
 import type { HandoffHook } from './message.js';
 
 /** Any of these in a user message enters handoff before classification (SPEC 5.7). */
-export const HANDOFF_KEYWORDS = ['真人', '客服人員', '人工客服', '轉人工', '找專人', '專人處理'] as const;
+export const HANDOFF_KEYWORDS = [
+  '真人',
+  '客服人員',
+  '人工客服',
+  '轉人工',
+  '找專人',
+  '專人處理',
+] as const;
 export const HANDOFF_DURATION_MS = 24 * 60 * 60 * 1000;
 /** Consecutive `confidence < MIN_CONFIDENCE` messages that trigger handoff. */
 export const LOW_CONF_STREAK_LIMIT = 2;
