@@ -93,3 +93,18 @@ cloudflared tunnel --url http://localhost:8090
 - **Verify 成功但傳訊息沒反應**：3a 的「回應方法」還在自動回應，或 Webhook 開關沒開。
 - **收到兩則回覆**：自動回應訊息沒關。
 - **Channel access token 400 Authentication failed**：token 複製不完整或已被重新 Issue。
+
+## 7. Cloudflare WAF：台灣以外封鎖時的例外
+
+`yuzen.tw` 有一條自訂規則封鎖台灣以外的流量，LINE 的 webhook 從日本（ASN 38631 LY Corporation）發出會拿到 403，Cursor automation 的 callback 也會被擋。解法是在該封鎖規則**之前**加一條 Skip 規則：
+
+- Security → WAF → Custom rules → Create rule，Action 選 **Skip**，勾 **All remaining custom rules**。
+- 表達式：
+
+```
+(http.host eq "linebot.yuzen.tw" and http.request.method eq "POST" and http.request.uri.path eq "/webhook" and ip.src.asnum eq 38631) or (http.host eq "linebot.yuzen.tw" and http.request.method eq "POST" and http.request.uri.path eq "/grok/callback")
+```
+
+- 建好後把它拖到台灣封鎖規則上方。
+- 只放行這兩條路徑：`/webhook` 另有簽章驗證，`/grok/callback` 另有 token 驗證；`/health` 與其他路徑對國外仍封鎖。
+- 若 Verify 仍 403，到 Security → Events 看該筆的 ASN，不是 38631 就加進表達式。
