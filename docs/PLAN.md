@@ -6,7 +6,7 @@
 
 ## T1 Scaffold（Medium）— 依賴：無
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 建立 npm 專案（ESM、TypeScript 5、Node 22）：`package.json` scripts `dev`（tsx watch）、`build`（tsc）、`start`、`test`（vitest）、`lint`、`format`、`format:check`、`export:suggestions`、`list-users`。安裝 hono、@hono/node-server、@line/bot-sdk、@anthropic-ai/sdk、better-sqlite3、zod、pino、pino-pretty（dev）、vitest、tsx、eslint + typescript-eslint、prettier。`src/config.ts` 以 zod 讀 env（SPEC 3.1 全部變數與預設值）。`src/logger.ts` pino 含 redact。`src/server.ts` Hono app 提供 `GET /health`（回 `{status:"ok", uptime, version}`）與 `POST /webhook` 佔位（回 200）。多階段 `Dockerfile`（builder → production，非 root uid 1000，`HEALTHCHECK`）、`docker-compose.yml`（port 8090、`./data:/data`、env_file）、`docker-compose.pi.yml`（SPEC 3.3：external network `bfx-multi_default`、alias `linebot`、mem_limit 256m、`8090:8090`）、`.dockerignore`、`.env.example`（所有變數加註解）、`.editorconfig`、`eslint.config.js`、`.prettierrc`、`tsconfig.json`、`vitest.config.ts`。一個 smoke test 打 `/health`。更新 `filemap.md`。
 
