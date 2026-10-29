@@ -1,0 +1,13 @@
+# 本機開發：docker compose up -d --build，之後 curl http://localhost:8090/health
+# 資料：SQLite 在 ./data（bind mount 到容器 /data）；首次啟動前先 `mkdir -p data`。
+services:
+  linebot:
+    build: .
+    ports:
+      - '8090:8090'
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -1,0 +1,52 @@
+# 樹莓派（Pi 5，aarch64 / 2GB）正式版：在 Pi 上直接 build + 啟動
+#   docker compose -f docker-compose.pi.yml up -d --build
+# 之後在家用網路可用 curl http://<Pi 的 IP>:8090/health 檢查。
+#
+# port：對外 8090。Pi 上 80/443/3000/3001/3002/3100/8080/8088 已被其他專案占用。
+# 資料：SQLite 落在 Pi 上的 ./data/linebot.db（bind mount ./data:/data，不用 named volume），
+#       備份＝直接複製整個 data 資料夾（含 linebot.db-wal / -shm，建議先 stop 再複製）。
+#       首次啟動前先 `mkdir -p data`，讓資料夾屬於登入使用者（uid 1000，與容器內 node 使用者相同），
+#       否則由 Docker 自動建立會是 root 所有，容器無法寫入。
+# 設定：讀同目錄的 .env（cp .env.example .env 後填值）。改 .env 後要重建容器才會生效：
+#   docker compose -f docker-compose.pi.yml up -d --force-recreate linebot
+# 更新：git pull 後重跑第一行即可。
+# 對外（Cloudflare Tunnel）：linebot 另外加入外部既有的 network bfx-multi_default
+#       （Pi 上 Cloudflare Tunnel 容器 bfx-cloudflared 所在，由另一個 compose 專案建立），
+#       Zero Trust Public Hostname 的 Service 填 http://linebot:8090，
+#       LINE webhook URL 填 https://linebot.<網域>/webhook。
+#       若該 network 不存在（例如別台機器）compose 會直接報錯；本機開發請改用 docker-compose.yml。
+services:
+  linebot:
+    container_name: linebot
+    build: .
+    ports:
+      - '8090:8090'
+    env_file: .env
+    environment:
+      # 容器內固定用 /data（對應 Pi 上的 ./data）；TZ 由 .env 提供
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    mem_limit: 256m
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      default:
+      tunnel:
+        aliases: [linebot]
+
+networks:
+  tunnel:
+    name: bfx-multi_default
+    external: true

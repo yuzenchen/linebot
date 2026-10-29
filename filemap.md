@@ -5,9 +5,14 @@
 - `CLAUDE.md` — 給 agent 的最短專案規則
 - `docs/SPEC.md` — 實作規格（唯一事實來源）
 - `docs/PLAN.md` — 任務清單與狀態
+- `docs/LINE-SETUP.md` — 使用者操作：建 Messaging API channel、關自動回應、開 webhook、tunnel
 - `docs/VERIFY.md` — T9 驗證結果（T9 建立）
 - `README.md` — 使用者操作手冊：本機啟動、LINE 設定、Pi 部署（T8 建立）
 - `knowledge/` — 客服知識庫 Markdown，啟動時全讀進 prompt；改 FAQ 內容來這裡（T4 建立）
+- `package.json`、`package-lock.json` — 相依套件與 npm scripts
+- `tsconfig.json` — TypeScript 設定（只編 `src/` → `dist/`）
+- `vitest.config.ts` — 測試設定（`test/**/*.test.ts`）
+- `eslint.config.js`、`.prettierrc`、`.prettierignore`、`.editorconfig` — lint / 格式設定
 - `src/config.ts` — env 讀取與 zod 驗證
 - `src/logger.ts` — pino
 - `src/texts.ts` — 所有使用者可見文案
@@ -22,5 +27,6 @@
 - `src/cli/` — export-suggestions、list-users
 - `test/` — vitest 測試
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
+- `.dockerignore` — Docker build context 排除清單
 - `.env.example` — 全部環境變數與說明
 - `data/` — SQLite 與匯出檔（gitignore）
