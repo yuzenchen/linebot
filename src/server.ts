@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { config } from './config.js';
+import { closeDb, openDatabase } from './db/index.js';
 import { logger } from './logger.js';
 
 // Resolves to the project root from both src/ (tsx) and dist/ (node).
@@ -28,6 +29,7 @@ export function createApp(): Hono {
 }
 
 function main(): void {
+  openDatabase();
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: config.PORT, hostname: '0.0.0.0' }, (info) => {
     logger.info({ port: info.port }, 'linebot listening');
@@ -42,6 +44,11 @@ function main(): void {
     force.unref();
     server.close((err) => {
       if (err) logger.error({ err }, 'error during shutdown');
+      try {
+        closeDb();
+      } catch (dbErr) {
+        logger.error({ err: dbErr }, 'error closing database');
+      }
       process.exit(err ? 1 : 0);
     });
   };

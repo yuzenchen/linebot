@@ -23,9 +23,18 @@
 - `src/health/` — pet eshop health check 呼叫與快取
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/db/` — SQLite 連線、migrations、repositories
+- `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
+- `src/db/migrate.ts` — `runMigrations(db)`：`schema_migrations` 記錄、依版本套用、可重複執行
+- `src/db/migrations/index.ts` — migrations 以字串內嵌（不另 copy `.sql`）；新增 schema 改動時 append 一筆
+- `src/db/time.ts` — `now()` / `nowIso()` 與 `setClock()`（測試用假時鐘）
+- `src/db/repos.ts` — `createRepos(db)` 一次建立全部 repository
+- `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
 - `src/jobs/` — 背景任務佇列與 handlers
+- `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
 - `src/cli/` — export-suggestions、list-users
 - `test/` — vitest 測試
+- `test/db/` — migrations 與 repository 測試（in-memory SQLite）
+- `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
 - `.dockerignore` — Docker build context 排除清單
 - `.env.example` — 全部環境變數與說明

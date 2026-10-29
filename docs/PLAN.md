@@ -14,7 +14,7 @@
 
 ## T2 資料層與 jobs 佇列（Careful）— 依賴：T1
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 `src/db/index.ts` 開啟 `${DATA_DIR}/linebot.db`（WAL、busy_timeout 5000），`src/db/migrate.ts` 依序套用 `src/db/migrations/*.sql`（`schema_migrations` 表記錄）。`001_init.sql` 建 SPEC 第 7 節全部表與索引（`messages(user_id, created_at)`、`jobs(status, run_after)`、`push_log(created_at)`）。Repository 模組：`events.ts`（`insertIfNew` 回 boolean）、`users.ts`（upsert、handoff 欄位、low_conf_streak）、`messages.ts`（insert、`recent(userId, n)`）、`classifications.ts`、`incidents.ts`（insert、`recentByStatus(status, withinMs)`）、`suggestions.ts`（insert、update summary、list）、`pushLog.ts`（insert、`countMonth()`）、`jobs.ts`。`src/jobs/queue.ts`：`enqueue(type, payload, runAfter?)`、`startWorker(handlers)` 單迴圈每 2 秒撈一筆 pending、最多 5 次、退避 `2^attempts * 5s`、啟動時 `running → pending`、`stop()` 等當前任務結束。全部 repository 以 prepared statements；型別用 zod schema 推導。
 
