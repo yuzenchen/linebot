@@ -33,7 +33,7 @@ const RECENT_INBOUND = 3;
 const RECENT_SCAN = 20;
 
 export interface HandoffDeps {
-  repos: Pick<Repos, 'users' | 'messages' | 'pushLog' | 'jobs'>;
+  repos: Pick<Repos, 'users' | 'messages' | 'pushLog' | 'jobs'> & Partial<Pick<Repos, 'grokTasks'>>;
   replier: Replier;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'>;
   now?: () => Date;
@@ -143,6 +143,7 @@ export function createHandoffService(deps: HandoffDeps) {
           pushesThisMonth: repos.pushLog.countMonth(at),
           pendingJobs: repos.jobs.countPending(),
           inHandoff: repos.users.listInHandoff(at).length,
+          grokWaiting: repos.grokTasks?.countOpen(),
         }),
       );
       return;

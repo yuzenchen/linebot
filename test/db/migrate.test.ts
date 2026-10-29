@@ -11,6 +11,7 @@ const expectedTables = [
   'suggestions',
   'jobs',
   'push_log',
+  'grok_tasks',
   'schema_migrations',
 ];
 
@@ -24,7 +25,10 @@ describe('runMigrations', () => {
 
     expect(runMigrations(db)).toBe(0);
     const rows = db.prepare('SELECT version, name FROM schema_migrations').all();
-    expect(rows).toEqual([{ version: 1, name: '001_init' }]);
+    expect(rows).toEqual([
+      { version: 1, name: '001_init' },
+      { version: 2, name: '002_grok_tasks' },
+    ]);
   });
 
   it('creates the expected indexes', () => {
@@ -38,6 +42,7 @@ describe('runMigrations', () => {
         'idx_jobs_status_run_after',
         'idx_push_log_created',
         'idx_incidents_status_created',
+        'idx_grok_tasks_status_expires',
       ]),
     );
   });

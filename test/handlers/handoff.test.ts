@@ -134,7 +134,9 @@ describe('handoff', () => {
 
     expect(classify).not.toHaveBeenCalled();
     // One inbound message (the /status itself) today.
-    expect(replyTexts(h)).toEqual([['今日訊息 1 則｜本月 push 1 則｜待處理 jobs 1｜人工中 1 人']]);
+    expect(replyTexts(h)).toEqual([
+      ['今日訊息 1 則｜本月 push 1 則｜待處理 jobs 1｜人工中 1 人｜Grok 等待中 0'],
+    ]);
   });
 
   it('admin /resume with one match clears handoff and pushes the user', async () => {

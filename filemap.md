@@ -5,6 +5,7 @@
 - `CLAUDE.md` — 給 agent 的最短專案規則
 - `docs/SPEC.md` — 實作規格（唯一事實來源）
 - `docs/PLAN.md` — 任務清單與狀態
+- `docs/CURSOR-AUTOMATION.md` — 使用者操作：Cursor automation 端的 prompt、callback 格式、測試方式
 - `docs/LINE-SETUP.md` — 使用者操作：建 Messaging API channel、關自動回應、開 webhook、tunnel
 - `docs/VERIFY.md` — T9 驗證結果（T9 建立）
 - `README.md` — 使用者操作手冊：本機啟動、webhook、環境變數、指令、Pi 部署、常見問題
@@ -35,8 +36,9 @@
 - `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
 - `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
-- `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（POST + HMAC，暫定 contract 寫在 doc comment）、`createGrokGateway(config)`；Grok webhook 介面確定後改這裡
-- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 HMAC（401），目前回 501（callback 模式待定）
+- `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（只負責派送：POST Cursor Automations webhook + `Authorization: Bearer`，body 含 `callback` 與 `instructions`，`buildDispatchBody()`）、`createGrokGateway(config)`；改派送 payload 或 instructions 來這裡
+- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed（push 使用者 / 管理員、寫 suggestions）、更新 `grok_tasks`
+- `src/grok/sweeper.ts` — `startGrokTaskSweeper()`：每分鐘把逾時的 `grok_tasks` 標 `expired`，service_question push 使用者 `grokTimeout` + 管理員；`sweepOnce()` 供測試
 - `src/db/` — SQLite 連線、migrations、repositories
 - `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
 - `src/db/migrate.ts` — `runMigrations(db)`：`schema_migrations` 記錄、依版本套用、可重複執行
@@ -44,18 +46,19 @@
 - `src/db/time.ts` — `now()` / `nowIso()` 與 `setClock()`（測試用假時鐘）
 - `src/db/repos.ts` — `createRepos(db)` 一次建立全部 repository
 - `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
+- `src/db/grokTasks.ts` — `createGrokTasksRepo(db)`：派送給 Cursor agent 的任務（`insert` / `get` / `setStatus` / `listExpired` / `countOpen`），migration 002
 - `src/jobs/` — 背景任務佇列與 handlers
 - `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
-- `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`（zod 驗 payload、Null 時 skipped、暫時性失敗重試）
+- `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`（zod 驗 payload、Null 時 skipped、先寫 `grok_tasks` 再派送、暫時性失敗重試、4xx 直接交人工）
 - `src/cli/export-suggestions.ts` — `npm run export:suggestions`：需求建議 Markdown 表格寫到 `${DATA_DIR}/exports/suggestions-YYYY-MM-DD.md`
 - `src/cli/list-users.ts` — `npm run list-users [-- --json]`：使用者、handoff、最後訊息時間與訊息數
 - `src/cli/render.ts` — `renderSuggestionsMarkdown()`（純函式，可單測）、`localDate()`
 - `src/cli/bootstrap.ts` — CLI 共用：讀 `.env`、開 `DATA_DIR` 的 DB、補 LINE 佔位值（logger 需要）
 - `test/` — vitest 測試
-- `test/db/` — migrations 與 repository 測試（in-memory SQLite）
+- `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
-- `test/grok/` — WebhookGrokGateway（fake fetch、HMAC）與 `/grok/callback` 路由測試
+- `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`sweeper.test.ts`（逾時處理）
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
 - `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
 - `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員

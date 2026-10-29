@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { createClassificationsRepo } from './classifications.js';
 import { createEventsRepo } from './events.js';
+import { createGrokTasksRepo } from './grokTasks.js';
 import { createIncidentsRepo } from './incidents.js';
 import { createJobsRepo } from './jobs.js';
 import { createMessagesRepo } from './messages.js';
@@ -19,6 +20,7 @@ export function createRepos(db: Database) {
     suggestions: createSuggestionsRepo(db),
     pushLog: createPushLogRepo(db),
     jobs: createJobsRepo(db),
+    grokTasks: createGrokTasksRepo(db),
   };
 }
 

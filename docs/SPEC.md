@@ -55,7 +55,10 @@
 | `CONTEXT_MESSAGES` | 否 | `6` | 每位使用者帶入分類的最近訊息數 |
 | `ADMIN_LINE_USER_ID` | 否 | | 空值時所有管理通知只寫 log |
 | `GROK_WEBHOOK_URL` | 否 | | 空值時使用 NullGrokGateway |
-| `GROK_WEBHOOK_SECRET` | 否 | | 待介面確認 |
+| `GROK_WEBHOOK_SECRET` | 否 | | Cursor Automations 的 Bearer token |
+| `PUBLIC_BASE_URL` | GROK 啟用時必填 | | 本服務對外網址（callback 用），無尾斜線 |
+| `GROK_CALLBACK_TOKEN` | GROK 啟用時必填 | | agent 回呼時帶的 `x-linebot-token` |
+| `GROK_TASK_TIMEOUT_MS` | 否 | `900000` | 等待 callback 的上限 |
 | `TZ` | 否 | `Asia/Taipei` | |
 
 ### 3.2 本機開發
@@ -187,24 +190,37 @@ LINE Platform ──POST /webhook──▶ Hono server
 4. 不 push 給使用者。
 5. CLI `npm run export:suggestions` 輸出 Markdown 表格到 `${DATA_DIR}/exports/suggestions-<date>.md`。
 
-### 5.6 Grok gateway（介面先定，實作待補）
+### 5.6 Grok gateway（Cursor Automations webhook，非同步）
+
+「Grok bot」實際上是一個 Cursor Automations 的 webhook 觸發器。它的行為：
+
+- `POST ${GROK_WEBHOOK_URL}`，header `Authorization: Bearer ${GROK_WEBHOOK_SECRET}`。一次 POST 啟動一次 agent run；HTTP 回應不含答案，任何 2xx 視為「已接受」。
+- 我們送出的 JSON 會被接在 automation 的 prompt 後面，所以 payload 必須自我描述：含 `callback`（網址、header 名、token、body 格式）與 `instructions`（繁中說明要做什麼、何時回報）。
+- agent 會對外發 HTTP，分多次回報到 `POST ${PUBLIC_BASE_URL}/grok/callback`，header `x-linebot-token: ${GROK_CALLBACK_TOKEN}`，body `{ taskId, status: received|processing|done|failed, text?, structured? }`。
 
 ```ts
 interface GrokTask {
-  id: string;
+  id: string;                 // UUID，callback 以此對應
   type: 'service_question' | 'incident_triage' | 'summarize_suggestion';
   userMessage: string;
-  context: string[];          // 最近對話
+  context: ContextMessage[];  // 最近對話 {role, text}
   health?: HealthResult;      // incident 用
   existingSuggestions?: Array<{ id: number; title: string }>; // summarize 用
 }
-interface GrokResult { ok: boolean; text?: string; structured?: unknown; error?: string }
-interface GrokGateway { run(task: GrokTask): Promise<GrokResult> }
+interface GrokGateway { readonly configured: boolean; run(task: GrokTask): Promise<GrokResult> } // run = 派送，不等答案
 ```
 
-- `NullGrokGateway`：回 `{ ok: false, error: 'grok_not_configured' }`。job 標記 `skipped`。對 `service_question` 的使用者 push 固定文案「此問題已轉交人工，會再回覆你」並通知管理員。
-- `WebhookGrokGateway`（待）：POST `GROK_WEBHOOK_URL`，HMAC 簽章用 `GROK_WEBHOOK_SECRET`。同步回應或非同步 callback `POST /grok/callback` 兩種模式待使用者提供介面後擇一。
-- 安全：Grok 側若有工具，只能唯讀；本服務送出的 payload 不含 channel token。
+生命週期（資料表 `grok_tasks`）：`sent` → `received` → `processing` → `done` | `failed`；超過 `GROK_TASK_TIMEOUT_MS`（預設 15 分鐘）未完成 → `expired`。
+
+| type | received / processing | done | failed / expired |
+|------|----------------------|------|------------------|
+| service_question | push 使用者狀態文案（同一狀態只推一次） | push 使用者 `text` | push 使用者「改由人工處理」+ 通知管理員 |
+| incident_triage | 不推 | push 管理員整理結果 | 通知管理員 |
+| summarize_suggestion | 忽略 | 驗證 `structured` 後更新 suggestions | 只記 log |
+
+- `NullGrokGateway`（`GROK_WEBHOOK_URL` 未設）：job 標記 `skipped`；service_question 的使用者收到「已轉交人工」並通知管理員。
+- 設定規則：`GROK_WEBHOOK_URL` 有值時，`PUBLIC_BASE_URL` 與 `GROK_CALLBACK_TOKEN` 必填。
+- 安全：callback token 以 timingSafeEqual 比對；payload 不含 LINE token；agent 側能力由 Cursor automation 設定，本服務不傳任何可寫入憑證。
 
 ### 5.7 人工轉接（`handlers/handoff.ts`）
 
@@ -277,7 +293,7 @@ interface GrokGateway { run(task: GrokTask): Promise<GrokResult> }
 
 ## 11. 待確認事項（不阻塞 MVP）
 
-- [ ] Grok bot webhook 的網址、驗證方式、同步或非同步回應格式（使用者稍後提供）。
+- [x] Grok bot webhook：Cursor Automations，Bearer 認證，非同步多次 callback（見 5.6）。
 - [x] `ADMIN_LINE_USER_ID`：已取得，填在 `.env`（不進版控）。
 - [ ] Cloudflare Tunnel 的子網域名稱。
 - [ ] 知識庫第一版內容校正。

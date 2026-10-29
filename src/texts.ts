@@ -15,6 +15,9 @@ export const texts = {
   incidentConfirmed: '已確認網站目前有異常，我們正在處理，恢復後會再通知你。造成不便很抱歉。',
   fallbackError: '系統忙碌中，請稍後再試，或留下你的問題，我們會盡快回覆。',
   grokUnavailable: '這個問題已轉交人工處理，專人會再回覆你，謝謝耐心等候。',
+  grokStatusReceived: '問題已送出給專人系統，處理中，稍後回覆你。',
+  grokStatusProcessing: '專人系統處理中，請稍候。',
+  grokTimeout: '專人系統這次沒有在時間內回覆，已改由人工處理，會再回覆你。',
   handoffEntered: '已為你轉接人工客服，請稍候，專人會在這裡回覆你。',
   handoffResumed: '人工客服處理完成，之後的問題可以繼續問我。',
   adminHelp:
@@ -43,8 +46,11 @@ export function adminStatus(d: {
   pushesThisMonth: number;
   pendingJobs: number;
   inHandoff: number;
+  /** Grok tasks still waiting for a callback; omitted when undefined. */
+  grokWaiting?: number;
 }): string {
-  return `今日訊息 ${d.messagesToday} 則｜本月 push ${d.pushesThisMonth} 則｜待處理 jobs ${d.pendingJobs}｜人工中 ${d.inHandoff} 人`;
+  const grok = d.grokWaiting === undefined ? '' : `｜Grok 等待中 ${d.grokWaiting}`;
+  return `今日訊息 ${d.messagesToday} 則｜本月 push ${d.pushesThisMonth} 則｜待處理 jobs ${d.pendingJobs}｜人工中 ${d.inHandoff} 人${grok}`;
 }
 
 /** `/resume` success reply. */

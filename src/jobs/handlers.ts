@@ -1,21 +1,24 @@
+import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { Config } from '../config.js';
 import type { Repos } from '../db/repos.js';
-import type { GrokGateway, GrokResult } from '../grok/gateway.js';
+import { now as clockNow } from '../db/time.js';
+import type { GrokGateway, GrokResult, GrokTask } from '../grok/gateway.js';
 import type { HealthResult } from '../health/check.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
-import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../texts.js';
+import { adminServiceQuestionNotice, texts } from '../texts.js';
 import { type Job, type JobHandlers, SkipJob } from './queue.js';
 
 export interface JobHandlerDeps {
-  repos: Pick<Repos, 'suggestions'>;
+  repos: Pick<Repos, 'suggestions' | 'grokTasks'>;
   replier: Pick<Replier, 'push'>;
   grok: GrokGateway;
-  config: Pick<Config, 'ADMIN_LINE_USER_ID'>;
+  config: Pick<Config, 'ADMIN_LINE_USER_ID' | 'GROK_TASK_TIMEOUT_MS'>;
   /** Must match the JobQueue's maxAttempts. Default 5. */
   maxAttempts?: number;
+  now?: () => Date;
   log?: Logger;
 }
 
@@ -47,7 +50,7 @@ const summarizeSuggestionPayload = z.object({
   userHash: z.string().optional(),
 });
 
-/** Shape Grok must return in `structured` for summarize_suggestion (provisional). */
+/** Shape the agent must send as `structured` in the `done` callback of summarize_suggestion. */
 export const suggestionSummarySchema = z.object({
   title: z.string().min(1),
   summary: z.string(),
@@ -61,12 +64,11 @@ function parsePayload<T>(schema: z.ZodType<T>, job: Job): T {
   return r.data;
 }
 
-/** 5xx, network / timeout and async_pending are worth retrying; Grok's own refusals are not. */
+/** 5xx and network / timeout are worth retrying; 4xx (bad token, bad request) is not. */
 export function isTransient(res: GrokResult): boolean {
   if (res.ok) return false;
   if (res.transient !== undefined) return res.transient;
-  const e = res.error ?? '';
-  return e === 'async_pending' || e.startsWith('http_5');
+  return (res.error ?? '').startsWith('http_5');
 }
 
 class TransientGrokError extends Error {
@@ -76,108 +78,118 @@ class TransientGrokError extends Error {
   }
 }
 
-/** SPEC 5.4–5.6 background jobs. Throw SkipJob → `skipped`; other throws → queue retry. */
+type Dispatch = { status: 'accepted' } | { status: 'transient' } | { status: 'failed' };
+
+/**
+ * SPEC 5.4–5.6 background jobs. Each handler only *dispatches* to the Cursor agent; the answer
+ * arrives later through `/grok/callback`, and `grok_tasks` tracks the wait (expired by the
+ * sweeper). Throw SkipJob → `skipped`; other throws → queue retry.
+ */
 export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
   const { repos, replier, grok, config } = deps;
   const log = deps.log ?? logger;
+  const now = deps.now ?? clockNow;
   const maxAttempts = deps.maxAttempts ?? 5;
   const admin = config.ADMIN_LINE_USER_ID;
+  const timeoutMs = config.GROK_TASK_TIMEOUT_MS;
+
+  async function notifyServiceQuestionFallback(userId: string, text: string): Promise<void> {
+    await replier.push(userId, [texts.grokUnavailable], 'grok_unavailable');
+    if (admin) {
+      await replier.push(
+        admin,
+        [adminServiceQuestionNotice({ userId, text })],
+        'admin_service_question',
+      );
+    }
+  }
+
+  /**
+   * Inserts the grok_tasks row *before* the HTTP call so a callback racing the response already
+   * finds it, then dispatches. On failure the row is marked `failed`.
+   */
+  async function dispatch(
+    job: Job,
+    userId: string | null,
+    task: Omit<GrokTask, 'id'>,
+  ): Promise<Dispatch> {
+    const id = randomUUID();
+    repos.grokTasks.insert({
+      id,
+      jobId: job.id,
+      type: task.type,
+      userId,
+      payload: job.payload,
+      expiresAt: new Date(now().getTime() + timeoutMs),
+    });
+    const res = await grok.run({ id, ...task });
+    const ctx = { jobId: job.id, taskId: id, type: task.type, attempts: job.attempts };
+    if (res.ok) {
+      log.info(ctx, 'grok task dispatched; waiting for callback');
+      return { status: 'accepted' };
+    }
+    repos.grokTasks.setStatus(id, 'failed', res.error);
+    if (isTransient(res)) {
+      log.warn({ ...ctx, error: res.error }, 'grok dispatch failed (transient)');
+      return { status: 'transient' };
+    }
+    log.error({ ...ctx, error: res.error }, 'grok dispatch rejected');
+    return { status: 'failed' };
+  }
 
   return {
     async service_question(job) {
       const p = parsePayload(serviceQuestionPayload, job);
-      const res = await grok.run({
-        id: String(job.id),
+      if (!grok.configured) {
+        log.warn({ jobId: job.id }, 'grok not configured; service question goes to admin');
+        await notifyServiceQuestionFallback(p.userId, p.text);
+        throw new SkipJob('grok_not_configured');
+      }
+      const d = await dispatch(job, p.userId, {
         type: 'service_question',
         userMessage: p.text,
         context: p.context,
       });
-      if (res.ok && res.text) {
-        await replier.push(p.userId, [res.text], 'grok_answer');
-        return;
+      if (d.status === 'accepted') return;
+      if (d.status === 'transient' && job.attempts < maxAttempts) {
+        throw new TransientGrokError('dispatch');
       }
-
-      const transient = grok.configured && isTransient(res);
-      const finalAttempt = job.attempts >= maxAttempts;
-      log.warn(
-        { jobId: job.id, error: res.error, transient, attempts: job.attempts },
-        'grok could not answer service question',
-      );
-      if (transient && !finalAttempt) throw new TransientGrokError(res.error);
-
-      await replier.push(p.userId, [texts.grokUnavailable], 'grok_unavailable');
-      if (admin) {
-        await replier.push(
-          admin,
-          [adminServiceQuestionNotice({ userId: p.userId, text: p.text })],
-          'admin_service_question',
-        );
-      }
-      if (!grok.configured) throw new SkipJob('grok_not_configured');
-      // Final attempt of a transient failure: let the queue mark it failed.
-      if (transient) throw new TransientGrokError(res.error);
+      // Final attempt of a transient failure, or a hard rejection: tell user + admin.
+      await notifyServiceQuestionFallback(p.userId, p.text);
+      if (d.status === 'transient') throw new TransientGrokError('dispatch');
     },
 
     async incident_triage(job) {
       const p = parsePayload(incidentTriagePayload, job);
       if (!grok.configured) throw new SkipJob('grok_not_configured');
-      const res = await grok.run({
-        id: String(job.id),
+      const d = await dispatch(job, p.userId, {
         type: 'incident_triage',
         userMessage: p.text,
         context: p.context,
         health: p.health as HealthResult,
       });
-      if (res.ok && res.text) {
-        if (admin) {
-          await replier.push(
-            admin,
-            [adminTriageNotice({ incidentId: p.incidentId, text: res.text })],
-            'admin_triage',
-          );
-        } else {
-          log.warn({ jobId: job.id, incidentId: p.incidentId }, 'triage ready but no admin id');
-        }
-        return;
+      if (d.status === 'transient') throw new TransientGrokError('dispatch');
+      if (d.status === 'failed') {
+        log.warn({ jobId: job.id, incidentId: p.incidentId }, 'grok triage not dispatched');
       }
-      if (isTransient(res)) throw new TransientGrokError(res.error);
-      log.warn({ jobId: job.id, incidentId: p.incidentId, error: res.error }, 'grok triage failed');
     },
 
     async summarize_suggestion(job) {
       const p = parsePayload(summarizeSuggestionPayload, job);
       if (!grok.configured) throw new SkipJob('grok_not_configured');
-      const res = await grok.run({
-        id: String(job.id),
+      const d = await dispatch(job, null, {
         type: 'summarize_suggestion',
         userMessage: p.text,
         context: [],
         existingSuggestions: repos.suggestions.listTitles(),
       });
-      if (!res.ok) {
-        if (isTransient(res)) throw new TransientGrokError(res.error);
-        log.warn(
-          { jobId: job.id, suggestionId: p.suggestionId, error: res.error },
-          'grok summarize failed',
-        );
-        return;
-      }
-      const s = suggestionSummarySchema.safeParse(res.structured);
-      if (!s.success) {
+      if (d.status === 'transient') throw new TransientGrokError('dispatch');
+      if (d.status === 'failed') {
         log.warn(
           { jobId: job.id, suggestionId: p.suggestionId },
-          'grok summary has invalid structure; suggestion stays new',
+          'grok summarize not dispatched; suggestion stays new',
         );
-        return;
       }
-      repos.suggestions.updateSummary(p.suggestionId, {
-        title: s.data.title,
-        summary: s.data.summary,
-        category: s.data.category,
-        mergedInto: s.data.mergedInto ?? null,
-        status: 'summarized',
-      });
-      log.info({ jobId: job.id, suggestionId: p.suggestionId }, 'suggestion summarized');
     },
   };
 }

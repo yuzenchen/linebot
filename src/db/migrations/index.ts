@@ -95,4 +95,24 @@ CREATE TABLE IF NOT EXISTS push_log (
 CREATE INDEX IF NOT EXISTS idx_push_log_created ON push_log (created_at);
 `;
 
-export const migrations: Migration[] = [{ version: 1, name: '001_init', sql: init }];
+const grokTasks = `
+CREATE TABLE IF NOT EXISTS grok_tasks (
+  id TEXT PRIMARY KEY,
+  job_id INTEGER,
+  type TEXT,
+  user_id TEXT,
+  payload TEXT,
+  status TEXT CHECK (status IN ('sent', 'received', 'processing', 'done', 'failed', 'expired')) DEFAULT 'sent',
+  last_text TEXT,
+  callbacks INTEGER DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT,
+  expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_grok_tasks_status_expires ON grok_tasks (status, expires_at);
+`;
+
+export const migrations: Migration[] = [
+  { version: 1, name: '001_init', sql: init },
+  { version: 2, name: '002_grok_tasks', sql: grokTasks },
+];

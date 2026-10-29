@@ -31,14 +31,40 @@ export const configSchema = z.object({
   ADMIN_LINE_USER_ID: optionalString,
   GROK_WEBHOOK_URL: z.preprocess(emptyToUndefined, z.url().optional()),
   GROK_WEBHOOK_SECRET: optionalString,
+  /** Our externally reachable origin (no trailing slash); builds the Grok callback URL. */
+  PUBLIC_BASE_URL: z.preprocess(
+    emptyToUndefined,
+    z
+      .url()
+      .transform((u) => u.replace(/\/+$/, ''))
+      .optional(),
+  ),
+  /** Shared token the Cursor agent sends back in `x-linebot-token` on `/grok/callback`. */
+  GROK_CALLBACK_TOKEN: optionalString,
+  /** How long a dispatched Grok task may wait for its `done` callback before it expires. */
+  GROK_TASK_TIMEOUT_MS: intWithDefault(900000),
   TZ: stringWithDefault('Asia/Taipei'),
+});
+
+/** Cross-field rules: a configured Grok webhook needs a callback URL and token. */
+const validatedConfigSchema = configSchema.superRefine((c, ctx) => {
+  if (!c.GROK_WEBHOOK_URL) return;
+  for (const field of ['PUBLIC_BASE_URL', 'GROK_CALLBACK_TOKEN'] as const) {
+    if (!c[field]) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [field],
+        message: 'is required when GROK_WEBHOOK_URL is set',
+      });
+    }
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
 
 /** Parse and validate env. Throws a readable error listing every invalid field. */
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
-  const result = configSchema.safeParse(env);
+  const result = validatedConfigSchema.safeParse(env);
   if (!result.success) {
     const lines = result.error.issues.map(
       (i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`,

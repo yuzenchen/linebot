@@ -32,6 +32,21 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ LINE_CHANNEL_ACCESS_TOKEN: 'token' })).toThrow(/LINE_CHANNEL_SECRET/);
   });
 
+  it('requires PUBLIC_BASE_URL and GROK_CALLBACK_TOKEN when GROK_WEBHOOK_URL is set', () => {
+    const grok = { ...required, GROK_WEBHOOK_URL: 'https://api2.cursor.sh/automations/webhook/x' };
+    expect(() => loadConfig(grok)).toThrow(/PUBLIC_BASE_URL[\s\S]*GROK_CALLBACK_TOKEN/);
+    expect(() => loadConfig({ ...grok, GROK_CALLBACK_TOKEN: 't' })).toThrow(/PUBLIC_BASE_URL/);
+    const cfg = loadConfig({
+      ...grok,
+      GROK_CALLBACK_TOKEN: 't',
+      PUBLIC_BASE_URL: 'https://a.test/',
+    });
+    expect(cfg.PUBLIC_BASE_URL).toBe('https://a.test');
+    expect(cfg.GROK_TASK_TIMEOUT_MS).toBe(900000);
+    // Without the webhook the callback settings stay optional.
+    expect(loadConfig({ ...required }).GROK_CALLBACK_TOKEN).toBeUndefined();
+  });
+
   it('lists every invalid field', () => {
     expect(() => loadConfig({ PORT: 'abc' })).toThrow(
       /PORT[\s\S]*LINE_CHANNEL_SECRET[\s\S]*LINE_CHANNEL_ACCESS_TOKEN/,

@@ -52,6 +52,12 @@
 
 驗證：vitest 測三種 handler 在 Null gateway 下的行為與 jobs 狀態轉移。
 
+## T6b Cursor Automations 非同步 callback（Careful）— 依賴：T6
+
+- [x] 狀態（2026-10-29 接受）
+
+Grok bot 確認為 Cursor Automations webhook：Bearer 認證、派送後由 agent 多次回呼 `/grok/callback`（received/processing/done/failed）。新增 `grok_tasks` 表、callback 路由、逾時 sweeper、`PUBLIC_BASE_URL`/`GROK_CALLBACK_TOKEN`/`GROK_TASK_TIMEOUT_MS`。見 SPEC 5.6 與 docs/CURSOR-AUTOMATION.md。
+
 ## T7 人工轉接與管理員指令（Medium）— 依賴：T5
 
 - [x] 狀態（2026-10-29 接受）

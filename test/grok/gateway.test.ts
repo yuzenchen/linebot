@@ -1,33 +1,40 @@
-import { createHmac } from 'node:crypto';
 import { pino } from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  bearerHeader,
+  callbackUrlFor,
   createGrokGateway,
+  GROK_INSTRUCTIONS,
   NullGrokGateway,
   WebhookGrokGateway,
   type GrokTask,
 } from '../../src/grok/gateway.js';
 
 const silent = pino({ level: 'silent' });
-const URL = 'https://grok.example.test/hook';
+const URL = 'https://api2.cursor.sh/automations/webhook/abc';
+const CALLBACK_URL = 'https://linebot.example.test/grok/callback';
+const CALLBACK_TOKEN = 'cb-token';
 
 const task: GrokTask = {
-  id: '7',
+  id: 'task-7',
   type: 'service_question',
   userMessage: '運費多少？',
   context: [{ role: 'user', text: '你好' }],
 };
 
 function gateway(fetchImpl: typeof fetch, secret?: string) {
-  return new WebhookGrokGateway({ url: URL, secret, fetchImpl, log: silent });
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
+  return new WebhookGrokGateway({
+    url: URL,
+    secret,
+    callbackUrl: CALLBACK_URL,
+    callbackToken: CALLBACK_TOKEN,
+    fetchImpl,
+    log: silent,
   });
 }
+
+const ok = () => vi.fn<typeof fetch>(async () => new Response('{"ok":true}', { status: 200 }));
+const status = (s: number) => vi.fn<typeof fetch>(async () => new Response('x', { status: s }));
 
 describe('NullGrokGateway', () => {
   it('is not configured and never succeeds', async () => {
@@ -37,89 +44,93 @@ describe('NullGrokGateway', () => {
   });
 });
 
+describe('bearerHeader / callbackUrlFor', () => {
+  it('normalises with or without an existing Bearer prefix', () => {
+    expect(bearerHeader('crsr_x')).toBe('Bearer crsr_x');
+    expect(bearerHeader('Bearer crsr_x')).toBe('Bearer crsr_x');
+    expect(bearerHeader('bearer  crsr_x ')).toBe('Bearer crsr_x');
+  });
+  it('builds the callback URL without a double slash', () => {
+    expect(callbackUrlFor('https://a.test')).toBe('https://a.test/grok/callback');
+    expect(callbackUrlFor('https://a.test/')).toBe('https://a.test/grok/callback');
+  });
+});
+
 describe('createGrokGateway', () => {
   it('picks Null without URL and Webhook with URL', () => {
-    expect(
-      createGrokGateway({ GROK_WEBHOOK_URL: undefined, GROK_WEBHOOK_SECRET: undefined }, silent)
-        .configured,
-    ).toBe(false);
-    expect(
-      createGrokGateway({ GROK_WEBHOOK_URL: URL, GROK_WEBHOOK_SECRET: 's' }, silent).configured,
-    ).toBe(true);
+    const base = {
+      GROK_WEBHOOK_SECRET: 's',
+      PUBLIC_BASE_URL: 'https://a.test',
+      GROK_CALLBACK_TOKEN: 't',
+    };
+    expect(createGrokGateway({ ...base, GROK_WEBHOOK_URL: undefined }, silent).configured).toBe(
+      false,
+    );
+    expect(createGrokGateway({ ...base, GROK_WEBHOOK_URL: URL }, silent).configured).toBe(true);
   });
 });
 
 describe('WebhookGrokGateway', () => {
-  it('POSTs the task as JSON with an HMAC signature of the raw body', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ ok: true, text: '60 元' }));
-    const res = await gateway(fetchImpl, 'grok-secret').run(task);
-    expect(res).toEqual({ ok: true, text: '60 元' });
+  it.each(['crsr_x', 'Bearer crsr_x'])(
+    'sends authorization: Bearer crsr_x for secret %j',
+    async (secret) => {
+      const fetchImpl = ok();
+      expect(await gateway(fetchImpl, secret).run(task)).toEqual({ ok: true, accepted: true });
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(url).toBe(URL);
+      expect(init?.method).toBe('POST');
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.authorization).toBe('Bearer crsr_x');
+      expect(headers['content-type']).toBe('application/json');
+      expect(headers['x-linebot-signature']).toBeUndefined();
+    },
+  );
 
-    const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe(URL);
-    expect(init?.method).toBe('POST');
-    const headers = init?.headers as Record<string, string>;
-    const body = init?.body as string;
-    expect(headers['content-type']).toBe('application/json');
-    expect(headers['x-linebot-signature']).toBe(
-      createHmac('sha256', 'grok-secret').update(body).digest('hex'),
-    );
-    expect(headers['x-linebot-timestamp']).toMatch(/^\d+$/);
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    expect(parsed).toMatchObject({ ...task });
-    expect(typeof parsed.sentAt).toBe('string');
+  it('body carries the task, callback contract and instructions', async () => {
+    const fetchImpl = ok();
+    await gateway(fetchImpl, 'crsr_x').run(task);
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1]?.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      ...task,
+      callback: {
+        url: CALLBACK_URL,
+        method: 'POST',
+        header: 'x-linebot-token',
+        token: CALLBACK_TOKEN,
+        body: { taskId: 'task-7' },
+      },
+      instructions: GROK_INSTRUCTIONS,
+    });
+    expect(typeof body.sentAt).toBe('string');
+    expect(GROK_INSTRUCTIONS).toContain('status=received');
   });
 
-  it('omits signature headers without a secret', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ ok: true, text: 'x' }));
-    await gateway(fetchImpl).run(task);
-    const headers = fetchImpl.mock.calls[0]![1]?.headers as Record<string, string>;
-    expect(headers['x-linebot-signature']).toBeUndefined();
+  it('treats any 2xx as accepted, even with a non-JSON body', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response('queued', { status: 202 }));
+    expect(await gateway(fetchImpl).run(task)).toEqual({ ok: true, accepted: true });
   });
 
-  it('passes through structured and error fields', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
-      jsonResponse({ ok: false, error: 'refused', structured: { a: 1 } }),
-    );
-    expect(await gateway(fetchImpl).run(task)).toEqual({
+  it('maps 401 / 403 / other 4xx to non-transient and 5xx to transient', async () => {
+    expect(await gateway(status(401)).run(task)).toEqual({
       ok: false,
-      error: 'refused',
-      structured: { a: 1 },
+      error: 'http_401',
+      transient: false,
+    });
+    expect(await gateway(status(403)).run(task)).toMatchObject({
+      error: 'http_403',
+      transient: false,
+    });
+    expect(await gateway(status(404)).run(task)).toMatchObject({
+      error: 'http_404',
+      transient: false,
+    });
+    expect(await gateway(status(500)).run(task)).toMatchObject({
+      error: 'http_500',
+      transient: true,
     });
   });
 
-  it('maps non-2xx to http_<status>', async () => {
-    const r500 = await gateway(
-      vi.fn<typeof fetch>(async () => new Response('x', { status: 500 })),
-    ).run(task);
-    expect(r500).toMatchObject({ ok: false, error: 'http_500', transient: true });
-    const r404 = await gateway(
-      vi.fn<typeof fetch>(async () => new Response('x', { status: 404 })),
-    ).run(task);
-    expect(r404).toMatchObject({ ok: false, error: 'http_404', transient: false });
-  });
-
-  it('maps 202 and {async:true} to async_pending', async () => {
-    const r202 = await gateway(
-      vi.fn<typeof fetch>(async () => new Response(null, { status: 202 })),
-    ).run(task);
-    expect(r202).toMatchObject({ ok: false, error: 'async_pending' });
-    const rAsync = await gateway(
-      vi.fn<typeof fetch>(async () => jsonResponse({ async: true })),
-    ).run(task);
-    expect(rAsync).toMatchObject({ ok: false, error: 'async_pending' });
-  });
-
-  it('maps a non-JSON or shapeless 2xx body to bad_response', async () => {
-    const r1 = await gateway(vi.fn<typeof fetch>(async () => new Response('hello'))).run(task);
-    expect(r1).toEqual({ ok: false, error: 'bad_response' });
-    const r2 = await gateway(vi.fn<typeof fetch>(async () => jsonResponse({ text: 'no ok' }))).run(
-      task,
-    );
-    expect(r2).toEqual({ ok: false, error: 'bad_response' });
-  });
-
-  it('never throws on network errors', async () => {
+  it('never throws on network errors and marks them transient', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => {
       throw new TypeError('fetch failed');
     });

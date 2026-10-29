@@ -12,7 +12,8 @@ import { createDispatcher, defaultWelcomeText } from './handlers/dispatcher.js';
 import { createHandoffService } from './handlers/handoff.js';
 import { createTextMessageHandler } from './handlers/message.js';
 import { createGrokCallbackRoute, type GrokCallbackDeps } from './grok/callback.js';
-import { createGrokGateway } from './grok/gateway.js';
+import { callbackUrlFor, createGrokGateway } from './grok/gateway.js';
+import { startGrokTaskSweeper, type GrokTaskSweeper } from './grok/sweeper.js';
 import { createHealthChecker } from './health/check.js';
 import { createJobHandlers } from './jobs/handlers.js';
 import { JobQueue } from './jobs/queue.js';
@@ -30,7 +31,7 @@ export interface AppDeps {
   channelSecret: string;
   repos: Pick<Repos, 'events'>;
   dispatch: (event: webhook.Event) => Promise<void>;
-  /** `/grok/callback` HMAC secret; the route answers 501 until callback mode is defined. */
+  /** `/grok/callback` deps; without them (or without a token) the route answers 503. */
   grokCallback?: GrokCallbackDeps;
 }
 
@@ -44,7 +45,11 @@ export function createApp(deps?: AppDeps): Hono {
 
   if (deps) {
     app.route('/webhook', createWebhookRoute(deps));
-    app.route('/grok/callback', createGrokCallbackRoute(deps.grokCallback));
+    if (deps.grokCallback) {
+      app.route('/grok/callback', createGrokCallbackRoute(deps.grokCallback));
+    } else {
+      app.post('/grok/callback', (c) => c.json({ error: 'callback not configured' }, 503));
+    }
   } else {
     app.post('/webhook', (c) => c.json({ error: 'not configured' }, 503));
     app.post('/grok/callback', (c) => c.json({ error: 'not configured' }, 503));
@@ -94,12 +99,21 @@ function main(): void {
     channelSecret: config.LINE_CHANNEL_SECRET,
     repos,
     dispatch,
-    grokCallback: { secret: config.GROK_WEBHOOK_SECRET },
+    grokCallback: { token: config.GROK_CALLBACK_TOKEN, repos, replier, config },
   });
+  const callbackUrl = config.PUBLIC_BASE_URL ? callbackUrlFor(config.PUBLIC_BASE_URL) : undefined;
+  let sweeper: GrokTaskSweeper | undefined;
   const server = serve({ fetch: app.fetch, port: config.PORT, hostname: '0.0.0.0' }, (info) => {
-    logger.info({ port: info.port, grokConfigured: grok.configured }, 'linebot listening');
+    logger.info(
+      { port: info.port, grokConfigured: grok.configured, callbackUrl },
+      'linebot listening',
+    );
     jobs.start(handlers);
     logger.info('job queue started');
+    if (grok.configured) {
+      sweeper = startGrokTaskSweeper({ repos, replier, config });
+      logger.info({ timeoutMs: config.GROK_TASK_TIMEOUT_MS }, 'grok task sweeper started');
+    }
   });
 
   let shuttingDown = false;
@@ -109,6 +123,7 @@ function main(): void {
     logger.info({ signal }, 'shutting down');
     const force = setTimeout(() => process.exit(1), 10_000);
     force.unref();
+    sweeper?.stop();
     server.close((err) => {
       if (err) logger.error({ err }, 'error during shutdown');
       void jobs
