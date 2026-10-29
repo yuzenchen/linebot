@@ -5,6 +5,7 @@
 - `CLAUDE.md` — 給 agent 的最短專案規則
 - `docs/SPEC.md` — 實作規格（唯一事實來源）
 - `docs/PLAN.md` — 任務清單與狀態（含第二階段）
+- `docs/ADMIN-HANDLER-DESIGN.md` — 管理端對話處理器的實作設計（T12a 產出，T12b 依此實作）
 - `docs/SPEC-ADMIN.md` — 第二階段：管理端 bot 規格草稿
 - `docs/CURSOR-AUTOMATION.md` — 使用者操作：Cursor automation 端的 prompt、callback 格式、測試方式
 - `docs/KNOWLEDGE-REVIEW.md` — 知識庫審閱檔（給 pet eshop 專案校對用，由 scratch 腳本產生）
@@ -41,6 +42,10 @@
 - `src/classifier/index.ts` — `normalize()` 信心度降級、`FallbackClassifier`、`createClassifier()` / `createClassifierFromConfig()`
 - `scripts/classify.ts` — `npm run classify -- "文字"` 打真 API 手動測分類（需 ANTHROPIC_API_KEY，不進測試）
 - `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
+- `src/notify/` — T13 管理通知搬家（客戶端 → 管理端）
+- `src/notify/adminNotifier.ts` — `createAdminNotifier()`：客戶端所有管理通知的唯一出口；有 `ADMIN_NOTIFY_URL` + `INTERNAL_NOTIFY_TOKEN` 時 POST 到管理端（`x-internal-token`，5 秒逾時），失敗退回 push `ADMIN_LINE_USER_ID`（reason `admin_<kind>`），都沒有就只寫 log；不會 throw
+- `src/notify/internalRoute.ts` — `createInternalNotifyRoute()`：管理端 `POST /internal/notify`（無 token 503、token 不符 401、zod 400），加「[客服 bot] 」前綴 push 給 `ADMIN_USER_IDS` 全員（reason `relay_<kind>`）
+- `test/notify/` — notifier（relay / 500 / 網路錯誤 / 逾時 fallback、只寫 log、不 reject）與 `/internal/notify`（503 / 401 / 400 / 200 計數、前綴規則）
 - `src/eshop/` — pet eshop 後台唯讀客戶端（T11；SPEC-ADMIN 第 4–6 節）
 - `src/eshop/types.ts` — 後端回應 zod schema（loose）、Order / Product / Stats 型別、狀態枚舉與 zh-TW 標籤表（`statusLabel` 等）、`ListOrdersParams`
 - `src/eshop/auth.ts` — `createTokenProvider()`：登入換 JWT、快取、到期前 1 小時重登、同時呼叫共用一次登入、連續 2 次失敗鎖 15 分鐘；`decodeJwtExp()`
