@@ -47,6 +47,43 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...required }).GROK_CALLBACK_TOKEN).toBeUndefined();
   });
 
+  it('defaults the bot profile to enduser with empty admin settings', () => {
+    const cfg = loadConfig({ ...required });
+    expect(cfg.BOT_PROFILE).toBe('enduser');
+    expect(cfg.ADMIN_USER_IDS).toEqual([]);
+    expect(cfg.ESHOP_API_BASE).toBe('https://petsnack-backend.onrender.com/api/v1');
+    expect(cfg.ADMIN_MODEL).toBe('claude-opus-5-5');
+    expect(cfg.ADMIN_MAX_TOOL_ROUNDS).toBe(4);
+    expect(cfg.ESHOP_BOT_USERNAME).toBeUndefined();
+    expect(cfg.INTERNAL_NOTIFY_TOKEN).toBeUndefined();
+    expect(cfg.ADMIN_NOTIFY_URL).toBeUndefined();
+  });
+
+  it('rejects an unknown BOT_PROFILE', () => {
+    expect(() => loadConfig({ ...required, BOT_PROFILE: 'ops' })).toThrow(/BOT_PROFILE/);
+  });
+
+  it('requires allowlist, eshop credentials and Anthropic key when BOT_PROFILE=admin', () => {
+    const admin = { ...required, BOT_PROFILE: 'admin' };
+    expect(() => loadConfig(admin)).toThrow(
+      /ADMIN_USER_IDS[\s\S]*ESHOP_BOT_USERNAME[\s\S]*ESHOP_BOT_PASSWORD[\s\S]*ANTHROPIC_API_KEY/,
+    );
+    expect(() => loadConfig({ ...admin, ADMIN_USER_IDS: ' , ' })).toThrow(/ADMIN_USER_IDS/);
+    const cfg = loadConfig({
+      ...admin,
+      ADMIN_USER_IDS: 'Ua, Ub ,,Uc',
+      ESHOP_BOT_USERNAME: 'bot',
+      ESHOP_BOT_PASSWORD: 'pw',
+      ANTHROPIC_API_KEY: 'sk-test',
+      ESHOP_API_BASE: 'https://api.test/v1/',
+      ADMIN_NOTIFY_URL: 'http://linebot-admin:8090/internal/notify',
+    });
+    expect(cfg.ADMIN_USER_IDS).toEqual(['Ua', 'Ub', 'Uc']);
+    expect(cfg.ESHOP_API_BASE).toBe('https://api.test/v1');
+    // The enduser profile never requires the admin settings.
+    expect(loadConfig({ ...required, ADMIN_USER_IDS: 'Ua' }).ADMIN_USER_IDS).toEqual(['Ua']);
+  });
+
   it('lists every invalid field', () => {
     expect(() => loadConfig({ PORT: 'abc' })).toThrow(
       /PORT[\s\S]*LINE_CHANNEL_SECRET[\s\S]*LINE_CHANNEL_ACCESS_TOKEN/,

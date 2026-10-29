@@ -19,7 +19,12 @@
 - `src/config.ts` — env 讀取與 zod 驗證
 - `src/logger.ts` — pino
 - `src/texts.ts` — 所有使用者可見文案
-- `src/server.ts` — Hono app、/health、路由掛載、graceful shutdown
+- `src/server.ts` — Hono app、/health（含 `profile`）、webhook 路由、依 `BOT_PROFILE` 建 profile 並接上 dispatcher / extraRoutes / start / stop、graceful shutdown
+- `src/profiles/` — T10：同一份程式碼兩種 bot，由 `BOT_PROFILE` 選擇
+- `src/profiles/types.ts` — `BotProfile`（`handleText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
+- `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
+- `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、Grok sweeper）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
+- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot；目前只有 `ADMIN_USER_IDS` 白名單檢查與佔位回覆，T12b 換成 Claude tool use 處理器
 - `src/line/client.ts` — `createLineClient()` 建 `MessagingApiClient`；`LineApi` 介面（reply / push / showLoading，測試傳 fake）
 - `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
 - `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
@@ -36,6 +41,13 @@
 - `src/classifier/index.ts` — `normalize()` 信心度降級、`FallbackClassifier`、`createClassifier()` / `createClassifierFromConfig()`
 - `scripts/classify.ts` — `npm run classify -- "文字"` 打真 API 手動測分類（需 ANTHROPIC_API_KEY，不進測試）
 - `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
+- `src/eshop/` — pet eshop 後台唯讀客戶端（T11；SPEC-ADMIN 第 4–6 節）
+- `src/eshop/types.ts` — 後端回應 zod schema（loose）、Order / Product / Stats 型別、狀態枚舉與 zh-TW 標籤表（`statusLabel` 等）、`ListOrdersParams`
+- `src/eshop/auth.ts` — `createTokenProvider()`：登入換 JWT、快取、到期前 1 小時重登、同時呼叫共用一次登入、連續 2 次失敗鎖 15 分鐘；`decodeJwtExp()`
+- `src/eshop/client.ts` — `createEshopClient()`：只有 `listOrders` / `getOrder` / `listProducts` / `lowStock` / `stats` 五個 GET，`#` 編碼、limit 夾 1–100、401 重登一次、404 → null、429 / 非 2xx / 格式錯誤對應錯誤類別、log 不含 token
+- `src/eshop/mask.ts` — `maskPhone()`、`maskOrder()`（預設遮電話、去 email / 備註 / 地址，`revealPii` 不遮）、`summariseOrder()` 一行摘要、`describeOrder()` 多行明細（台北時區）
+- `src/eshop/errors.ts` — `EshopAuthError` / `EshopRateLimited` / `EshopHttpError` / `EshopBadResponse` / `EshopTimeout` / `EshopNetworkError`，皆含 zh-TW `userMessage`
+- `src/eshop/index.ts` — re-export
 - `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（只負責派送：POST Cursor Automations webhook + `Authorization: Bearer`，body 含 `callback` 與 `instructions`，`buildDispatchBody()`）、`createGrokGateway(config)`；改派送 payload 或 instructions 來這裡
@@ -64,8 +76,11 @@
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
 - `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
 - `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員
+- `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
-- `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
+- `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕 / 放行、push fallback、`/grok/callback` 掛載
+- `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）
+- `.env.admin`、`data-admin/` — 管理端容器的設定與 SQLite（gitignore）
 - `.dockerignore` — Docker build context 排除清單
 - `.env.example` — 全部環境變數與說明
 - `data/` — SQLite 與匯出檔（gitignore）

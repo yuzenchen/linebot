@@ -22,6 +22,9 @@ export const texts = {
   handoffResumed: '人工客服處理完成，之後的問題可以繼續問我。',
   adminHelp:
     '管理員指令：\n/status 今日訊息、本月 push、待處理 jobs、人工中人數\n/resume <userId前8碼> 解除人工轉接\n/handoff <userId前8碼> 轉為人工 24 小時',
+  adminOnly: '此帳號僅供內部使用。',
+  adminPlaceholder: '管理端功能建置中。',
+  adminWelcome: '管理端 bot 已就緒，可以問訂單與庫存狀況。',
 } as const;
 
 /** Admin push when a user enters human handoff (SPEC 5.7). */

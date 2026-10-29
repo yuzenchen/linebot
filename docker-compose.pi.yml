@@ -15,6 +15,22 @@
 #       Zero Trust Public Hostname 的 Service 填 http://linebot:8090，
 #       LINE webhook URL 填 https://linebot.<網域>/webhook。
 #       若該 network 不存在（例如別台機器）compose 會直接報錯；本機開發請改用 docker-compose.yml。
+#
+# 管理端（第二個容器 linebot-admin，SPEC-ADMIN 第 3 節）：
+#   - 同一個 image、同一份程式碼，只靠 BOT_PROFILE=admin 切換行為。它掛在 compose profile「admin」下，
+#     所以上面那行 up 只會起客戶端；要一起起管理端用：
+#       docker compose -f docker-compose.pi.yml --profile admin up -d --build
+#     （.env.admin 還沒建好之前不要加 --profile admin）。
+#   - 設定讀 .env.admin：複製 .env.example 後改 BOT_PROFILE=admin、填「管理端」LINE channel 的
+#     LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN，以及 ADMIN_USER_IDS、ESHOP_BOT_USERNAME /
+#     ESHOP_BOT_PASSWORD、ANTHROPIC_API_KEY（admin profile 缺這些會啟動失敗）。
+#   - 資料獨立：SQLite 落在 ./data-admin（bind mount 到容器 /data），備份方式同上；首次啟動前 `mkdir -p data-admin`。
+#   - 容器內仍聽 8090（PORT 預設值），只有 host 端對應改成 8091：port 8091 只給家用網路檢查用
+#     （curl http://<Pi 的 IP>:8091/health），對外一律走 tunnel。
+#   - Cloudflare Zero Trust 多加一個 Public Hostname：linebot-admin.yuzen.tw → http://linebot-admin:8090
+#     （tunnel 網路別名 linebot-admin），WAF 同樣放行 /webhook 與 /grok/callback；
+#     管理端 LINE channel 的 webhook URL 填 https://linebot-admin.yuzen.tw/webhook。
+#   - 改 .env.admin 後：docker compose -f docker-compose.pi.yml up -d --force-recreate linebot-admin
 services:
   linebot:
     container_name: linebot
@@ -45,6 +61,38 @@ services:
       default:
       tunnel:
         aliases: [linebot]
+
+  linebot-admin:
+    container_name: linebot-admin
+    build: .
+    profiles: ['admin']
+    ports:
+      - '8091:8090'
+    env_file: .env.admin
+    environment:
+      # 容器內固定用 /data（對應 Pi 上的 ./data-admin）；port 仍是 8090，只有 host 端映射到 8091
+      BOT_PROFILE: admin
+      DATA_DIR: /data
+    volumes:
+      - ./data-admin:/data
+    restart: unless-stopped
+    mem_limit: 256m
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      default:
+      tunnel:
+        aliases: [linebot-admin]
 
 networks:
   tunnel:

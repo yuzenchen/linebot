@@ -44,18 +44,76 @@ export const configSchema = z.object({
   /** How long a dispatched Grok task may wait for its `done` callback before it expires. */
   GROK_TASK_TIMEOUT_MS: intWithDefault(900000),
   TZ: stringWithDefault('Asia/Taipei'),
+
+  // --- Bot profile (T10). `enduser` is the customer-facing bot; `admin` the internal one. ---
+  BOT_PROFILE: z.preprocess(emptyToUndefined, z.enum(['enduser', 'admin']).default('enduser')),
+  /** Comma-separated LINE userIds allowed to talk to the admin bot. */
+  ADMIN_USER_IDS: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .optional()
+      .transform((s) =>
+        (s ?? '')
+          .split(',')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0),
+      ),
+  ),
+  ESHOP_API_BASE: z.preprocess(
+    emptyToUndefined,
+    z
+      .url()
+      .transform((u) => u.replace(/\/+$/, ''))
+      .default('https://petsnack-backend.onrender.com/api/v1'),
+  ),
+  ESHOP_BOT_USERNAME: optionalString,
+  ESHOP_BOT_PASSWORD: optionalString,
+  ADMIN_MODEL: stringWithDefault('claude-opus-5-5'),
+  ADMIN_MAX_TOOL_ROUNDS: intWithDefault(4),
+  /** Shared secret between the two containers for `POST /internal/notify` (T13). */
+  INTERNAL_NOTIFY_TOKEN: optionalString,
+  /** Where the enduser bot sends admin notifications (T13); e.g. `http://linebot-admin:8090/internal/notify`. */
+  ADMIN_NOTIFY_URL: z.preprocess(emptyToUndefined, z.url().optional()),
 });
 
-/** Cross-field rules: a configured Grok webhook needs a callback URL and token. */
+/**
+ * Cross-field rules:
+ * - a configured Grok webhook needs a callback URL and token;
+ * - the admin profile needs an allowlist, eshop bot credentials and an Anthropic key.
+ */
 const validatedConfigSchema = configSchema.superRefine((c, ctx) => {
-  if (!c.GROK_WEBHOOK_URL) return;
-  for (const field of ['PUBLIC_BASE_URL', 'GROK_CALLBACK_TOKEN'] as const) {
-    if (!c[field]) {
+  if (c.GROK_WEBHOOK_URL) {
+    for (const field of ['PUBLIC_BASE_URL', 'GROK_CALLBACK_TOKEN'] as const) {
+      if (!c[field]) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: 'is required when GROK_WEBHOOK_URL is set',
+        });
+      }
+    }
+  }
+  if (c.BOT_PROFILE === 'admin') {
+    if (c.ADMIN_USER_IDS.length === 0) {
       ctx.addIssue({
         code: 'custom',
-        path: [field],
-        message: 'is required when GROK_WEBHOOK_URL is set',
+        path: ['ADMIN_USER_IDS'],
+        message: 'must list at least one LINE userId when BOT_PROFILE=admin',
       });
+    }
+    for (const field of [
+      'ESHOP_BOT_USERNAME',
+      'ESHOP_BOT_PASSWORD',
+      'ANTHROPIC_API_KEY',
+    ] as const) {
+      if (!c[field]) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: 'is required when BOT_PROFILE=admin',
+        });
+      }
     }
   }
 });

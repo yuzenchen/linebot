@@ -74,13 +74,11 @@ Pi 上兩個容器：`linebot`（8090，客戶端）與 `linebot-admin`（8091�
 
 ## 5. 憑證與唯讀保證
 
-後端現況（wa'mahouse session 2026-10-30 回覆）：admin JWT 由 `POST /auth/login` 取得，HS256、7 天到期、無 refresh、無唯讀 scope、無 API key、全站每 IP 每分鐘 100 次。
+後端現況（wa'mahouse 2026-10-30）：**viewer 唯讀角色已上線**（commit abb5973，Render 已部署）。viewer 只能呼叫 7 個 GET：`/orders`、`/orders/:orderId`、`/admin/products`、`/admin/stock/low`、`/admin/stats`、`/admin/addons`、`/admin/bundles`；其他路由一律 403，路徑必須完全相同（尾斜線也會 403）。登入 `POST /auth/login`，body `{ identifier, password }`，回傳 `user.role = viewer`；JWT HS256、7 天、無 refresh。登入失敗 5 次（15 分鐘內）鎖 IP；全站每 IP 每分鐘 100 次。
 
-因此唯讀由 bot 這邊強制：
-
-- `EshopClient` 只實作 GET，端點寫死白名單（第 4 節那 5 個），不提供通用 request 方法。
-- 為 bot 建一個獨立的 admin 帳號（由 wa'mahouse 後台建立），密碼只放管理端 bot 的 `.env`；登入後 token 快取在記憶體，遇 401 或到期前 1 小時重新登入；登入失敗 5 次會被鎖 15 分鐘，所以登入錯誤要退避。
-- 建議（需 wa'mahouse 後端配合，不阻塞第一批）：新增 `role: viewer` 或唯讀 API key，只能呼叫 GET。做了之後 bot 改用它，風險才真正下降。
+- bot 帳號 `linebot_viewer`（帳號只能小寫英數與底線）由使用者在後端目錄用 `src/scripts/manage-account.js` 建立，密碼只放管理端 `.env.admin`。
+- 雙重保險：bot 這邊的 `EshopClient` 仍只實作 5 個 GET、無通用 request 方法；登入連續失敗 2 次即退避 15 分鐘。
+- 日期參數帶 `+08:00` 時 `+` 必須編碼成 `%2B`（client 用 `URLSearchParams`，已處理）；只寫日期會被當 UTC 午夜。
 
 ## 6. 個資處理
 

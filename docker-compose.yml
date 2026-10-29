@@ -1,5 +1,7 @@
 # 本機開發：docker compose up -d --build，之後 curl http://localhost:8090/health
 # 資料：SQLite 在 ./data（bind mount 到容器 /data）；首次啟動前先 `mkdir -p data`。
+# 管理端：docker compose --profile admin up -d --build 會多起 linebot-admin（host 8091 → 容器 8090），
+#   需要 .env.admin（複製 .env.example、BOT_PROFILE=admin、管理端 channel 的 LINE 金鑰）與 ./data-admin。
 services:
   linebot:
     build: .
@@ -10,4 +12,17 @@ services:
       DATA_DIR: /data
     volumes:
       - ./data:/data
+    restart: unless-stopped
+
+  linebot-admin:
+    build: .
+    profiles: ['admin']
+    ports:
+      - '8091:8090'
+    env_file: .env.admin
+    environment:
+      BOT_PROFILE: admin
+      DATA_DIR: /data
+    volumes:
+      - ./data-admin:/data
     restart: unless-stopped

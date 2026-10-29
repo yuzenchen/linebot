@@ -97,7 +97,7 @@ T3 與 T4 可並行；T6、T7、T8 可並行。
 
 ## T10 Profile 拆分（Careful）— 依賴：第一階段全部
 
-- [ ] 狀態
+- [x] 狀態（2026-10-30 接受）
 
 新增 `BOT_PROFILE` 設定；`server.ts` 依 profile 組裝不同的訊息處理器與 prompt，共用 webhook、Replier、DB、jobs、Grok、health。`docker-compose.pi.yml` 加第二個服務 `linebot-admin`（8091、獨立 `.env.admin`、獨立 `data-admin/`、同樣加入 tunnel 網路並以 `linebot-admin` 為別名）。既有測試全部維持通過；enduser profile 行為不變。
 
@@ -105,7 +105,7 @@ T3 與 T4 可並行；T6、T7、T8 可並行。
 
 ## T11 EshopClient 唯讀客戶端（Careful）— 依賴：T10
 
-- [ ] 狀態
+- [x] 狀態（2026-10-30 接受）
 
 `src/eshop/client.ts`：登入換 token（快取、到期前重登、401 重登一次、失敗退避）、只實作 SPEC-ADMIN 第 4 節的 5 個 GET、回應以 zod 驗證並轉成內部型別、個資遮罩函式（第 6 節）、每次呼叫記 log（不含 token）。以 mock fetch 測試：登入流程、401 重登、鎖定退避、遮罩規則、端點白名單外的呼叫在型別層就不可能發生。
 

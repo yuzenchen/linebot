@@ -7,20 +7,17 @@ import { Hono } from 'hono';
 import { config } from './config.js';
 import { closeDb, getDb } from './db/index.js';
 import { createRepos, type Repos } from './db/repos.js';
-import { createClassifierFromConfig } from './classifier/index.js';
-import { createDispatcher, defaultWelcomeText } from './handlers/dispatcher.js';
-import { createHandoffService } from './handlers/handoff.js';
-import { createTextMessageHandler } from './handlers/message.js';
-import { createGrokCallbackRoute, type GrokCallbackDeps } from './grok/callback.js';
+import { createDispatcher } from './handlers/dispatcher.js';
+import type { GrokCallbackDeps } from './grok/callback.js';
 import { callbackUrlFor, createGrokGateway } from './grok/gateway.js';
-import { startGrokTaskSweeper, type GrokTaskSweeper } from './grok/sweeper.js';
 import { createHealthChecker } from './health/check.js';
-import { createJobHandlers } from './jobs/handlers.js';
 import { JobQueue } from './jobs/queue.js';
 import { createLineClient } from './line/client.js';
 import { Replier } from './line/replier.js';
 import { createWebhookRoute } from './line/webhook.js';
 import { logger } from './logger.js';
+import { JOB_MAX_ATTEMPTS, mountGrokCallback } from './profiles/enduser.js';
+import { createProfile, type Shared } from './profiles/index.js';
 
 // Resolves to the project root from both src/ (tsx) and dist/ (node).
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -33,23 +30,29 @@ export interface AppDeps {
   dispatch: (event: webhook.Event) => Promise<void>;
   /** `/grok/callback` deps; without them (or without a token) the route answers 503. */
   grokCallback?: GrokCallbackDeps;
+  /** Profile-specific routes (e.g. `/grok/callback` via the profile); mounted before the 503 fallbacks. */
+  extraRoutes?: (app: Hono) => void;
+  /** Reported by `/health`; `main()` passes `config.BOT_PROFILE`. */
+  profile?: string;
 }
 
-/** Without `deps` the webhook and grok callback routes exist but answer 503 (tests, misconfiguration). */
+/**
+ * Without `deps` the webhook and grok callback routes exist but answer 503 (tests, misconfiguration)
+ * and `/health` reports the default profile without touching config (env may be absent in tests).
+ */
 export function createApp(deps?: AppDeps): Hono {
   const app = new Hono();
+  const profile = deps?.profile ?? 'enduser';
 
   app.get('/health', (c) =>
-    c.json({ status: 'ok', uptime: Math.round(process.uptime()), version: pkg.version }),
+    c.json({ status: 'ok', uptime: Math.round(process.uptime()), version: pkg.version, profile }),
   );
 
   if (deps) {
     app.route('/webhook', createWebhookRoute(deps));
-    if (deps.grokCallback) {
-      app.route('/grok/callback', createGrokCallbackRoute(deps.grokCallback));
-    } else {
-      app.post('/grok/callback', (c) => c.json({ error: 'callback not configured' }, 503));
-    }
+    deps.extraRoutes?.(app);
+    if (deps.grokCallback) mountGrokCallback(app, deps.grokCallback);
+    app.post('/grok/callback', (c) => c.json({ error: 'callback not configured' }, 503));
   } else {
     app.post('/webhook', (c) => c.json({ error: 'not configured' }, 503));
     app.post('/grok/callback', (c) => c.json({ error: 'not configured' }, 503));
@@ -58,13 +61,10 @@ export function createApp(deps?: AppDeps): Hono {
   return app;
 }
 
-const JOB_MAX_ATTEMPTS = 5;
-
 function main(): void {
   const db = getDb();
   const repos = createRepos(db);
   const replier = new Replier(createLineClient(), repos);
-  const classifier = createClassifierFromConfig();
   const health = createHealthChecker({
     url: config.HEALTH_CHECK_URL,
     timeoutMs: config.HEALTH_CHECK_TIMEOUT_MS,
@@ -72,48 +72,30 @@ function main(): void {
   });
   const jobs = new JobQueue(repos.jobs, { maxAttempts: JOB_MAX_ATTEMPTS });
   const grok = createGrokGateway(config, logger);
-  const handlers = createJobHandlers({
-    repos,
-    replier,
-    grok,
-    config,
-    maxAttempts: JOB_MAX_ATTEMPTS,
-  });
-  const handoffService = createHandoffService({ repos, replier, config });
-  const handleText = createTextMessageHandler({
-    repos,
-    replier,
-    classifier,
-    health,
-    jobs,
-    config,
-    handoffService,
-  });
+  const shared: Shared = { config, repos, replier, jobs, grok, health, logger };
+  const profile = createProfile(config.BOT_PROFILE, shared);
   const dispatch = createDispatcher({
     repos,
     replier,
-    handleText,
-    welcomeText: defaultWelcomeText,
+    handleText: profile.handleText,
+    welcomeText: profile.welcomeText,
   });
   const app = createApp({
     channelSecret: config.LINE_CHANNEL_SECRET,
     repos,
     dispatch,
-    grokCallback: { token: config.GROK_CALLBACK_TOKEN, repos, replier, config },
+    extraRoutes: profile.extraRoutes,
+    profile: profile.name,
   });
   const callbackUrl = config.PUBLIC_BASE_URL ? callbackUrlFor(config.PUBLIC_BASE_URL) : undefined;
-  let sweeper: GrokTaskSweeper | undefined;
   const server = serve({ fetch: app.fetch, port: config.PORT, hostname: '0.0.0.0' }, (info) => {
     logger.info(
-      { port: info.port, grokConfigured: grok.configured, callbackUrl },
+      { port: info.port, profile: profile.name, grokConfigured: grok.configured, callbackUrl },
       'linebot listening',
     );
-    jobs.start(handlers);
-    logger.info('job queue started');
-    if (grok.configured) {
-      sweeper = startGrokTaskSweeper({ repos, replier, config });
-      logger.info({ timeoutMs: config.GROK_TASK_TIMEOUT_MS }, 'grok task sweeper started');
-    }
+    void Promise.resolve(profile.start?.()).catch((err) =>
+      logger.error({ err }, 'error starting profile'),
+    );
   });
 
   let shuttingDown = false;
@@ -123,21 +105,24 @@ function main(): void {
     logger.info({ signal }, 'shutting down');
     const force = setTimeout(() => process.exit(1), 10_000);
     force.unref();
-    sweeper?.stop();
-    server.close((err) => {
-      if (err) logger.error({ err }, 'error during shutdown');
-      void jobs
-        .stop()
-        .catch((jobErr) => logger.error({ err: jobErr }, 'error stopping job queue'))
-        .finally(() => {
-          try {
-            closeDb();
-          } catch (dbErr) {
-            logger.error({ err: dbErr }, 'error closing database');
-          }
-          process.exit(err ? 1 : 0);
+    void Promise.resolve(profile.stop?.())
+      .catch((err) => logger.error({ err }, 'error stopping profile'))
+      .finally(() => {
+        server.close((err) => {
+          if (err) logger.error({ err }, 'error during shutdown');
+          void jobs
+            .stop()
+            .catch((jobErr) => logger.error({ err: jobErr }, 'error stopping job queue'))
+            .finally(() => {
+              try {
+                closeDb();
+              } catch (dbErr) {
+                logger.error({ err: dbErr }, 'error closing database');
+              }
+              process.exit(err ? 1 : 0);
+            });
         });
-    });
+      });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
