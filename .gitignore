@@ -1,0 +1,25 @@
+# deps / build
+node_modules/
+dist/
+coverage/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# logs / os / editor
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# claude local
+.claude/worktrees/

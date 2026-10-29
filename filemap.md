@@ -1,0 +1,26 @@
+# filemap
+
+路徑 — 內容 / 何時改。T1 scaffold 之後由各任務維護。
+
+- `CLAUDE.md` — 給 agent 的最短專案規則
+- `docs/SPEC.md` — 實作規格（唯一事實來源）
+- `docs/PLAN.md` — 任務清單與狀態
+- `docs/VERIFY.md` — T9 驗證結果（T9 建立）
+- `README.md` — 使用者操作手冊：本機啟動、LINE 設定、Pi 部署（T8 建立）
+- `knowledge/` — 客服知識庫 Markdown，啟動時全讀進 prompt；改 FAQ 內容來這裡（T4 建立）
+- `src/config.ts` — env 讀取與 zod 驗證
+- `src/logger.ts` — pino
+- `src/texts.ts` — 所有使用者可見文案
+- `src/server.ts` — Hono app、/health、路由掛載、graceful shutdown
+- `src/line/` — LINE client、webhook 驗簽與去重、Replier（reply→push fallback）
+- `src/handlers/` — dispatcher、message 主流程、incident、feature、handoff
+- `src/classifier/` — 分類器介面、Anthropic 實作、規則式 fallback、知識庫載入
+- `src/health/` — pet eshop health check 呼叫與快取
+- `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
+- `src/db/` — SQLite 連線、migrations、repositories
+- `src/jobs/` — 背景任務佇列與 handlers
+- `src/cli/` — export-suggestions、list-users
+- `test/` — vitest 測試
+- `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
+- `.env.example` — 全部環境變數與說明
+- `data/` — SQLite 與匯出檔（gitignore）
