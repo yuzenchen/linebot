@@ -21,7 +21,10 @@
 - `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
 - `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
 - `src/handlers/dispatcher.ts` — `createDispatcher()`：只處理 user source；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
-- `src/handlers/` — message 主流程、incident、feature、handoff（T5 / T7 建立）
+- `src/handlers/message.ts` — `createTextMessageHandler()`：SPEC 5.2 主流程（handoff hook、loading、脈絡、分類與 `REPLY_DEADLINE_MS` race、依類別分派、reply → 逾期 push、保底回覆、寫 classifications、低信心 streak）
+- `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
+- `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
+- `src/handlers/handoff.ts` — 人工轉接（T7 建立）
 - `src/classifier/types.ts` — 五類 `categories`、zod `classificationSchema`、`Classifier` / `ClassifyInput` / `ClassifyResult` 型別
 - `src/classifier/knowledge.ts` — `loadKnowledge()`：讀 `knowledge/*.md`（排除 welcome.md）依檔名串接、快取；`resetKnowledgeCache()`
 - `src/classifier/prompt.ts` — `buildSystemBlocks()`：固定規則 block + 知識庫 block（cache_control）；改分類規則來這裡
@@ -30,7 +33,7 @@
 - `src/classifier/index.ts` — `normalize()` 信心度降級、`FallbackClassifier`、`createClassifier()` / `createClassifierFromConfig()`
 - `scripts/classify.ts` — `npm run classify -- "文字"` 打真 API 手動測分類（需 ANTHROPIC_API_KEY，不進測試）
 - `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
-- `src/health/` — pet eshop health check 呼叫與快取
+- `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/db/` — SQLite 連線、migrations、repositories
 - `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
@@ -46,7 +49,8 @@
 - `test/db/` — migrations 與 repository 測試（in-memory SQLite）
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
-- `test/handlers/` — dispatcher 測試
+- `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
+- `test/health/` — health checker 測試（fake fetch）
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
 - `.dockerignore` — Docker build context 排除清單
 - `.env.example` — 全部環境變數與說明

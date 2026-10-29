@@ -38,7 +38,7 @@
 
 ## T5 訊息主流程、回覆策略、health check、異常與需求建議（Careful）— 依賴：T3、T4
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 `src/health/check.ts`（SPEC 5.4 步驟 1–2，快取與重試，回 `{status:'healthy'|'degraded'|'down', httpStatus?, body?, latencyMs}`）。`src/handlers/message.ts` 實作 SPEC 5.2 全部步驟：脈絡、loading、分類與期限 race、依類別分派、reply→push、保底回覆、寫 classifications。`src/handlers/incident.ts` 實作 SPEC 5.4（含 10 分鐘合併、管理員 push 文案含 health 原始回應摘要、enqueue `incident_triage`）。`src/handlers/feature.ts` 實作 SPEC 5.5 步驟 1–4（enqueue `summarize_suggestion`）。`service_related`：reply「已轉交專人查詢」，enqueue `service_question`。`off_topic`：固定拒答文案。所有使用者可見文案集中在 `src/texts.ts`。
 

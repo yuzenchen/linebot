@@ -7,12 +7,15 @@ import { Hono } from 'hono';
 import { config } from './config.js';
 import { closeDb, getDb } from './db/index.js';
 import { createRepos, type Repos } from './db/repos.js';
+import { createClassifierFromConfig } from './classifier/index.js';
 import { createDispatcher, defaultWelcomeText } from './handlers/dispatcher.js';
+import { createTextMessageHandler } from './handlers/message.js';
+import { createHealthChecker } from './health/check.js';
+import { JobQueue } from './jobs/queue.js';
 import { createLineClient } from './line/client.js';
 import { Replier } from './line/replier.js';
 import { createWebhookRoute } from './line/webhook.js';
 import { logger } from './logger.js';
-import { texts } from './texts.js';
 
 // Resolves to the project root from both src/ (tsx) and dist/ (node).
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -46,13 +49,19 @@ function main(): void {
   const db = getDb();
   const repos = createRepos(db);
   const replier = new Replier(createLineClient(), repos);
+  const classifier = createClassifierFromConfig();
+  const health = createHealthChecker({
+    url: config.HEALTH_CHECK_URL,
+    timeoutMs: config.HEALTH_CHECK_TIMEOUT_MS,
+    cacheMs: config.HEALTH_CACHE_MS,
+  });
+  const jobs = new JobQueue(repos.jobs);
+  // T6: jobs.start(handlers) — not started yet so pending jobs are not burned as `no_handler`.
+  const handleText = createTextMessageHandler({ repos, replier, classifier, health, jobs, config });
   const dispatch = createDispatcher({
     repos,
     replier,
-    // Placeholder until T5 provides the real text handler.
-    handleText: async ({ replyToken, userId }) => {
-      await replier.replyOrPush(replyToken, userId, [texts.placeholderAck], 'placeholder');
-    },
+    handleText,
     welcomeText: defaultWelcomeText,
   });
   const app = createApp({ channelSecret: config.LINE_CHANNEL_SECRET, repos, dispatch });
@@ -69,12 +78,17 @@ function main(): void {
     force.unref();
     server.close((err) => {
       if (err) logger.error({ err }, 'error during shutdown');
-      try {
-        closeDb();
-      } catch (dbErr) {
-        logger.error({ err: dbErr }, 'error closing database');
-      }
-      process.exit(err ? 1 : 0);
+      void jobs
+        .stop()
+        .catch((jobErr) => logger.error({ err: jobErr }, 'error stopping job queue'))
+        .finally(() => {
+          try {
+            closeDb();
+          } catch (dbErr) {
+            logger.error({ err: dbErr }, 'error closing database');
+          }
+          process.exit(err ? 1 : 0);
+        });
     });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
