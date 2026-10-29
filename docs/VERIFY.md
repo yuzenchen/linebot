@@ -106,3 +106,11 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - 正式環境（Pi + Cloudflare Tunnel，`https://linebot.yuzen.tw`）已收到 LINE webhook 並正確回覆：「運費多少」→ `kb_answer` 0.95。
 - 曾被 Cloudflare 自訂規則（台灣以外封鎖）擋成 403，已加 Skip 規則放行 `/webhook`（ASN 38631）與 `/grok/callback`。
 - 本機開發容器與 cloudflared 已停止。
+
+
+## 第二階段補記（2026-10-30）
+
+- 管理端 bot（yuzenadmin）部署於 Pi 容器 `linebot-admin`，對外 `https://linebot-admin.yuzen.tw`，WAF Skip 規則已涵蓋兩個 host。
+- 正式環境 log：viewer 登入 200、`GET /orders` 200，四次自然語言查詢 outcome `answered`、latency 4.6 到 7.7 秒、`piiRevealed:false`、第二次起 `cache_read_input_tokens` > 4000。
+- 客戶端 → 管理端的 `/internal/notify` 轉送已啟用，內網連通與 401 保護已驗證。
+- 尚未在正式環境實測：report_issue 經 Cursor 回推、店家老闆帳號。

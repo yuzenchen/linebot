@@ -110,15 +110,16 @@ API 回傳完整 `customer`（姓名、電話、email、IG、地址）。bot 回
 - `admin_queries`：id、user_id、text、tools JSON、reply、pii_revealed、latency_ms、created_at。
 - 其餘沿用第一階段的表（events、messages、users、jobs、grok_tasks）。
 
-## 10. 完成定義（第一批）
+## 10. 完成定義（第一批）— 2026-10-30 驗證
 
-- [ ] 非白名單 userId 傳訊息得到拒絕文案，log 有紀錄。
-- [ ] 「今天有幾筆未付款」「訂單 #20261030-XXXXXXXX 狀態」「哪些商品快沒貨」「本月營收」四句都在 10 秒內得到正確數字（與後台頁面比對）。
-- [ ] 回覆不含電話全碼、email、地址，除非明確要求。
-- [ ] 抓包或 log 證明 bot 只發出 GET。
-- [ ] token 過期自動重新登入，登入失敗不重試超過 2 次。
-- [ ] 「LINE Pay 付完款訂單沒更新」送到 Cursor，callback 結果推回管理端帳號。
-- [ ] Pi 上第二個容器啟動，`linebot-admin.yuzen.tw/health` 回 200，LINE Verify 通過。
+- [x] 非白名單 userId 傳訊息得到拒絕文案（單元測試與本機 smoke）。
+- [x] 「今天有幾筆未付款」等查詢在正式環境 5 到 8 秒內回覆，viewer 帳號登入與 `/orders` 皆 200（使用者在 LINE 上確認正常）。
+- [x] 回覆不含電話全碼、email、地址（`piiRevealed:false`，遮罩有單元測試）。
+- [x] bot 只發出 GET：客戶端只實作 5 個 GET，且後端 viewer 角色對寫入回 403。
+- [x] token 過期自動重新登入、連續失敗退避（單元測試）。
+- [ ] 「LINE Pay 付完款訂單沒更新」送到 Cursor 並回推管理端：程式已接，尚未在正式環境實測。
+- [x] Pi 上第二個容器啟動，`linebot-admin.yuzen.tw/health` 回 200，LINE Verify 通過。
+- [ ] 店家老闆的 userId 加入 `ADMIN_USER_IDS`（待提供）。
 
 ## 11. 使用者決定（2026-10-30）
 

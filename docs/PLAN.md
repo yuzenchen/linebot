@@ -123,6 +123,6 @@ Heavy：設計 system prompt、工具 schema、回覆格式規範、多輪工具
 
 ## T14 部署與驗證（Light）— 依賴：T11–T13
 
-- [ ] 狀態
+- [x] 狀態（2026-10-30 接受：Pi 上 linebot-admin 容器、linebot-admin.yuzen.tw、WAF 例外、LINE Verify 與實際查詢皆通過）
 
 Pi 上啟動第二個容器、Cloudflare hostname 與 WAF 例外、LINE 管理端 channel 設定（文件化到 LINE-SETUP.md）、SPEC-ADMIN 第 10 節逐項驗證並寫入 VERIFY.md。
