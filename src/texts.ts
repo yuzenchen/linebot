@@ -32,7 +32,99 @@ export const texts = {
   adminToolCapNote: '（查詢步驟已達上限，以上是目前查到的資料；可加條件縮小範圍再問）',
   adminPiiRecordPlaceholder: '（此則回覆含完整個資，內容未保存）',
   adminTruncated: '…（內容過長，已截斷）',
+  adminReplyCancelled: '已取消先前的回覆草稿。',
+  adminReplyTooLong: '回覆內容最多 1000 字，請縮短後再試。',
+  adminTicketNotFound: '找不到這張工單，請確認編號。',
+  adminTicketClosed: '這張工單已關閉，無法回覆。',
+  adminTicketListEmpty: '目前沒有待回覆的工單。',
 } as const;
+
+const TICKET_LIST_MAX = 10;
+const TICKET_QUESTION_PREVIEW = 40;
+const TICKET_QUESTION_MAX = 1500;
+
+/** `2026-10-30T01:12:00.000Z` → `10-30 09:12` (Asia/Taipei, fixed UTC+8). */
+function taipeiShort(iso: string): string {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return iso;
+  const s = new Date(t.getTime() + 8 * 3600_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(s.getUTCMonth() + 1)}-${p(s.getUTCDate())} ${p(s.getUTCHours())}:${p(s.getUTCMinutes())}`;
+}
+
+/** T16: the staged reply the admin must confirm with Y. */
+export function adminReplyConfirm(display: string, text: string): string {
+  return `將送給 ${display} 的客戶：\n『${text}』\n回 Y 送出，其他內容取消。`;
+}
+
+export function adminReplySent(display: string, userIdShort: string): string {
+  return `已送給 ${display} 的客戶（${userIdShort}）。`;
+}
+
+export function adminReplyFailed(reason: string): string {
+  return `送出失敗：${reason}`;
+}
+
+export function adminTicketClosedDone(display: string): string {
+  return `已關閉 ${display}。`;
+}
+
+export interface AdminTicketListRow {
+  display: string;
+  createdAt: string;
+  userIdShort: string;
+  question: string;
+}
+
+/** `T042｜10-30 01:12｜U603787…｜<question first 40 chars>`, at most 10 lines. */
+export function adminTicketList(rows: AdminTicketListRow[]): string {
+  if (rows.length === 0) return texts.adminTicketListEmpty;
+  const lines = rows.slice(0, TICKET_LIST_MAX).map((r) => {
+    const q = r.question.replace(/\s+/g, ' ').trim();
+    const preview =
+      q.length > TICKET_QUESTION_PREVIEW ? `${q.slice(0, TICKET_QUESTION_PREVIEW)}…` : q;
+    return `${r.display}｜${taipeiShort(r.createdAt)}｜${r.userIdShort}｜${preview}`;
+  });
+  if (rows.length > TICKET_LIST_MAX) lines.push(`還有 ${rows.length - TICKET_LIST_MAX} 張`);
+  return lines.join('\n');
+}
+
+export interface AdminTicketDetailInput {
+  display: string;
+  status: string;
+  userIdShort: string;
+  createdAt: string;
+  orderIds: string[];
+  question: string;
+  context: string[];
+  answer: string | null;
+  answeredBy: string | null;
+}
+
+const TICKET_STATUS_LABEL: Record<string, string> = {
+  open: '待回覆',
+  answered: '已回覆',
+  closed: '已關閉',
+};
+
+export function adminTicketDetail(t: AdminTicketDetailInput): string {
+  const q =
+    t.question.length > TICKET_QUESTION_MAX
+      ? `${t.question.slice(0, TICKET_QUESTION_MAX)}${texts.adminTruncated}`
+      : t.question;
+  const lines = [
+    `${t.display}｜${TICKET_STATUS_LABEL[t.status] ?? t.status}｜客戶 ${t.userIdShort}｜${taipeiShort(t.createdAt)}`,
+  ];
+  if (t.orderIds.length > 0) lines.push(`訂單：${t.orderIds.join('、')}`);
+  lines.push(`問：${q}`);
+  if (t.context.length > 0) {
+    lines.push('最近對話：');
+    for (const c of t.context) lines.push(`- ${c}`);
+  }
+  if (t.answer) lines.push(`已回覆（${t.answeredBy ?? '-'}）：${t.answer}`);
+  if (t.status !== 'closed') lines.push(`回覆方式：回覆 ${t.display} <內容>`);
+  return lines.join('\n');
+}
 
 /** Admin push when a user enters human handoff (SPEC 5.7). */
 export function adminHandoffNotice(d: {

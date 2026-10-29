@@ -1,5 +1,11 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { vi } from 'vitest';
+import {
+  EnduserClientError,
+  type EnduserClient,
+  type TicketDetail,
+  type TicketSummary,
+} from '../../src/admin/enduserClient.js';
 import type { AdminModelClient } from '../../src/admin/loop.js';
 import type { EshopClient } from '../../src/eshop/index.js';
 import { orderSchema, type Order } from '../../src/eshop/types.js';
@@ -102,6 +108,53 @@ export function fakeEshop(): FakeEshop {
       pendingShipping: 2,
       lowStockCount: 1,
     })),
+  };
+}
+
+export type FakeEnduser = {
+  [K in keyof EnduserClient]: ReturnType<typeof vi.fn<EnduserClient[K]>>;
+};
+
+export function ticketSummary(over: Partial<TicketSummary> = {}): TicketSummary {
+  return {
+    id: 1,
+    display: 'T001',
+    userIdShort: 'U6037873…',
+    question: '我的訂單什麼時候出貨',
+    orderIds: ['#20261029-VXJG7AZY'],
+    status: 'open',
+    createdAt: '2026-10-29T17:12:00.000Z',
+    updatedAt: '2026-10-29T17:12:00.000Z',
+    ...over,
+  };
+}
+
+export function ticketDetail(over: Partial<TicketDetail> = {}): TicketDetail {
+  return {
+    ...ticketSummary(),
+    context: ['昨天訂的', '我的訂單什麼時候出貨'],
+    answeredBy: null,
+    answer: null,
+    answeredAt: null,
+    ...over,
+  };
+}
+
+/** In-memory enduser client: one open ticket T001 by default. */
+export function fakeEnduser(): FakeEnduser {
+  return {
+    listOpenTickets: vi.fn(async () => [ticketSummary()]),
+    getTicket: vi.fn(async (id: number) => {
+      if (id !== 1) throw new EnduserClientError('not_found', '找不到這張工單', 404);
+      return ticketDetail();
+    }),
+    replyTicket: vi.fn(async (id: number) => ({
+      ok: true as const,
+      pushed: true as const,
+      ticketId: id,
+      userIdShort: 'U6037873…',
+    })),
+    closeTicket: vi.fn(async () => {}),
   };
 }
 

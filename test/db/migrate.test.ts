@@ -14,6 +14,7 @@ const expectedTables = [
   'grok_tasks',
   'admin_queries',
   'tickets',
+  'pending_confirmations',
   'schema_migrations',
 ];
 
@@ -32,6 +33,7 @@ describe('runMigrations', () => {
       { version: 2, name: '002_grok_tasks' },
       { version: 3, name: '003_admin_queries' },
       { version: 4, name: '004_tickets' },
+      { version: 5, name: '005_pending_confirmations' },
     ]);
   });
 

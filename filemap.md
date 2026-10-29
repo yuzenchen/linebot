@@ -31,10 +31,11 @@
 - `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
 - `src/handlers/dispatcher.ts` — `createDispatcher()`：只處理 user source；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
 - `src/handlers/message.ts` — `createTextMessageHandler()`：SPEC 5.2 主流程（handoff hook、loading、脈絡、分類與 `REPLY_DEADLINE_MS` race、依類別分派、reply → 逾期 push、保底回覆、寫 classifications、低信心 streak）
-- `src/handlers/admin.ts` — `createAdminTextHandler()`：管理端主流程（ADMIN-HANDLER-DESIGN §5）：白名單、loading、脈絡、`runAdminQuery` 與 `REPLY_DEADLINE_MS` race（逾時先回 `adminAckPending` 再 push）、寫 `admin_queries`、含個資時以 `recordAs` 存佔位文字；`splitReply()` 切 5000 字 / 5 則
+- `src/handlers/admin.ts` — `createAdminTextHandler()`：管理端主流程（ADMIN-HANDLER-DESIGN §5）：白名單、T16 工單攔截（模型之前：待確認項 + `Y` 送出 / 其他訊息取消並續處理、「回覆 T042 …」建草稿、「待回覆」「工單 T042」「關閉 T042」，全部經 `EnduserClient` 走 HTTP）、loading、脈絡、`runAdminQuery` 與 `REPLY_DEADLINE_MS` race（逾時先回 `adminAckPending` 再 push）、模型用 `reply_customer` 時在回覆尾端補確認文、寫 `admin_queries`、含個資時以 `recordAs` 存佔位文字；`splitReply()` 切 5000 字 / 5 則
+- `src/admin/enduserClient.ts` — `createEnduserClient()`：管理端呼叫客戶端 `/internal/tickets`（列表 / 明細 / 關單）與 `/internal/reply` 的 HTTP 客戶端（`x-internal-token`、8 秒逾時、不記錄 token）；`EnduserClientError`（kind + zh-TW `userMessage`）、`enduserErrorMessage()`
 - `src/admin/` — T12b 管理端 Claude tool-use 對話（設計：`docs/ADMIN-HANDLER-DESIGN.md`）
 - `src/admin/prompt.ts` — `ADMIN_RULES_PROMPT`（固定、帶 cache_control）、`buildDateBlock(now)` 台北日期錨點、`buildSystem(now)`、`CAP_INSTRUCTION`
-- `src/admin/tools.ts` — 7 個 strict 工具定義（zod → JSON schema）、`createToolExecutor()`（並行執行、8000 字上限、`PII_REQUEST` 個資閘門、`report_issue` 寫 incidents + enqueue `incident_triage`）、`ToolCallRecord`
+- `src/admin/tools.ts` — 8 個 strict 工具定義（zod → JSON schema）、`createToolExecutor()`（並行執行、8000 字上限、`PII_REQUEST` 個資閘門、`report_issue` 寫 incidents + enqueue `incident_triage`、`reply_customer` 經客戶端查工單後只寫 `pending_confirmations` 草稿並回報 `staged`）、`ToolCallRecord`
 - `src/admin/loop.ts` — `runAdminQuery()`：`beta.messages.create` 手寫迴圈（server-side fallback、effort medium、tool_choice auto / 上限時 none + 系統訊息、stop_reason 對應、逾時與總預算），永不 reject；`AdminModelClient` 介面供測試注入 fake
 - `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
 - `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
@@ -51,7 +52,7 @@
 - `src/notify/adminNotifier.ts` — `createAdminNotifier()`：客戶端所有管理通知的唯一出口；有 `ADMIN_NOTIFY_URL` + `INTERNAL_NOTIFY_TOKEN` 時 POST 到管理端（`x-internal-token`，5 秒逾時），失敗退回 push `ADMIN_LINE_USER_ID`（reason `admin_<kind>`），都沒有就只寫 log；不會 throw
 - `src/notify/directAdminNotifier.ts` — `createDirectAdminNotifier()`：管理端 profile 用的 `AdminNotifier`，直接 push 給 `ADMIN_USER_IDS` 全員（reason `admin_<kind>`，逐一 catch）
 - `src/notify/internalRoute.ts` — `createInternalNotifyRoute()`：管理端 `POST /internal/notify`（無 token 503、token 不符 401、zod 400），加「[客服 bot] 」前綴 push 給 `ADMIN_USER_IDS` 全員（reason `relay_<kind>`）
-- `test/admin/` — `fakes.ts`（腳本化 fake model client、fake EshopClient）、`tools.test.ts`（schema strict 檢查、日期錨點、各工具 executor、PII 閘門、report_issue）、`handler.test.ts`（白名單、請求形狀、並行工具、輪數上限、deadline、錯誤對應、splitReply）
+- `test/admin/` — `fakes.ts`（腳本化 fake model client、fake EshopClient、fake EnduserClient）、`tools.test.ts`（schema strict 檢查、日期錨點、各工具 executor、PII 閘門、report_issue）、`handler.test.ts`（白名單、請求形狀、並行工具、輪數上限、deadline、錯誤對應、splitReply）、`reply.test.ts`（T16：回覆草稿 / Y 送出 / 取消續處理 / 到期 / 兩位管理員 / 待回覆 / 工單 / 關閉 / `reply_customer` 工具 / 審計列 / 文案）、`enduserClient.test.ts`（fake fetch：路徑、token、錯誤分類、不記錄 token）
 - `test/notify/` — notifier（relay / 500 / 網路錯誤 / 逾時 fallback、只寫 log、不 reject）與 `/internal/notify`（503 / 401 / 400 / 200 計數、前綴規則）
 - `src/eshop/` — pet eshop 後台唯讀客戶端（T11；SPEC-ADMIN 第 4–6 節）
 - `src/eshop/types.ts` — 後端回應 zod schema（loose）、Order / Product / Stats 型別、狀態枚舉與 zh-TW 標籤表（`statusLabel` 等）、`ListOrdersParams`
@@ -74,12 +75,14 @@
 - `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
 - `src/db/adminQueries.ts` — `createAdminQueriesRepo(db)`：管理端每次查詢一列（`insert` / `recent`），migration 003
 - `src/db/grokTasks.ts` — `createGrokTasksRepo(db)`：派送給 Cursor agent 的任務（`insert` / `get` / `setStatus` / `recordFollowUp` / `listExpired` / `countOpen`），migration 002
+- `src/db/pendingConfirmations.ts` — `createPendingConfirmationsRepo(db)`：T16 管理員待確認的客戶回覆草稿（每位管理員一筆，`set` 覆蓋、`get(adminUserId, now)` 到期即刪並回 null、`clear`），migration 005
 - `src/db/tickets.ts` — `createTicketsRepo(db)`：T15 工單（SPEC-ADMIN §12.2）：`openOrAppend`（每位客戶同時只一張 open，已有就附加 `\n---\n` 問題）/ `get` / `findOpenByUser` / `findActiveByUser` / `listOpen` / `markAnswered` / `close` / `autoClose` / `recentByUser`，migration 004
 - `src/tickets/` — T15 客戶端工單
 - `src/tickets/ids.ts` — `displayId(42)` → `T042`、`parseTicketId('T42' | 't042' | '42')`
 - `src/tickets/orderIds.ts` — `extractOrderIds(text)`：抓 `#YYYYMMDD-XXXXXXXX`（可帶 D / G 前綴）並正規化
 - `src/tickets/service.ts` — `createTicketService()`：`open()` 開單或附加 + 管理端通知（`[待回覆 T042]` / `[T042 追問]`，通知文字在 `texts.ts`）、`notifyFollowUp()`；jobs/handlers、grok callback、sweeper、handoff、message.ts 的開單點都經由它
 - `src/tickets/internalReplyRoute.ts` — `createInternalReplyRoute()`：客戶端 `POST /internal/reply`（管理端專人回覆用；token 503 / 401、zod 400、404、closed 409、push 失敗 502 工單維持 open；成功 push 客戶 reason `ticket_reply` 並標 `answered`）
+- `src/tickets/internalTicketsRoute.ts` — `createInternalTicketsRoute()`：客戶端 `/internal/tickets`（T16，管理端讀工單用，同 token 守門）：`GET /?status=open&limit=10` 列表、`GET /:id` 明細（含 context / answer）、`POST /:id/close`；回應不含完整 userId（前 8 碼 + …）
 - `src/jobs/` — 背景任務佇列與 handlers
 - `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
 - `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`（zod 驗 payload、Null 時 skipped、先寫 `grok_tasks` 再派送、暫時性失敗重試、4xx 直接交人工）
@@ -98,7 +101,7 @@
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
 - `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕、push fallback、`start` / `stop`、`/grok/callback` 與 `/internal/notify` 掛載
-- `test/tickets/` — T15 工單：`helpers.ts`（直接 push 管理員的 ticket service、工單列）、`repo.test.ts`、`ids.test.ts`（id / 訂單編號）、`service.test.ts`（通知文字）、`message.test.ts`（open 工單時的 `ticketPending`）、`internalReplyRoute.test.ts`、`followup.test.ts`（callback 事後補充）
+- `test/tickets/` — T15 工單：`helpers.ts`（直接 push 管理員的 ticket service、工單列）、`repo.test.ts`、`ids.test.ts`（id / 訂單編號）、`service.test.ts`（通知文字）、`message.test.ts`（open 工單時的 `ticketPending`）、`internalReplyRoute.test.ts`、`internalTicketsRoute.test.ts`（T16 讀 / 關單路由、token、去識別化）、`followup.test.ts`（callback 事後補充）
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）
 - `.env.admin`、`data-admin/` — 管理端容器的設定與 SQLite（gitignore）
 - `.dockerignore` — Docker build context 排除清單

@@ -8,6 +8,7 @@ import { createTextMessageHandler } from '../handlers/message.js';
 import { createJobHandlers } from '../jobs/handlers.js';
 import { createAdminNotifier } from '../notify/adminNotifier.js';
 import { createInternalReplyRoute } from '../tickets/internalReplyRoute.js';
+import { createInternalTicketsRoute } from '../tickets/internalTicketsRoute.js';
 import { createTicketService } from '../tickets/service.js';
 import type { BotProfile, Shared } from './types.js';
 
@@ -68,6 +69,11 @@ export function createEnduserProfile(shared: Shared): BotProfile {
       app.route(
         '/internal/reply',
         createInternalReplyRoute({ token: config.INTERNAL_NOTIFY_TOKEN, repos, replier }),
+      );
+      // T16: the admin bot (own database) reads / closes tickets over HTTP.
+      app.route(
+        '/internal/tickets',
+        createInternalTicketsRoute({ token: config.INTERNAL_NOTIFY_TOKEN, repos }),
       );
     },
     start: () => {

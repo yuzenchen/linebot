@@ -139,7 +139,7 @@ migration 004 `tickets`；repo；開單點（jobs/handlers Null 與非暫時性�
 
 ## T16 管理端回覆流程（Careful）— 依賴：T15
 
-- [ ] 狀態
+- [x] 狀態（2026-10-30 接受）
 
 `pending_confirmations` 表（或記憶體 + 到期）；`handlers/admin.ts` 在模型前加正則攔截：「回覆 T<id> <內容>」、`Y`、「待回覆」、「工單 T<id>」、「關閉 T<id>」；工具 `reply_customer` 只建立待確認項；送出呼叫客戶端 `/internal/reply`；結果回管理員；`admin_queries` 記錄；`ENDUSER_INTERNAL_URL` 設定。測試：確認/取消/到期、兩位管理員各自的待確認項互不干擾、送出失敗訊息。
 

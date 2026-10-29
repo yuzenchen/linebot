@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { createEnduserClient } from '../admin/enduserClient.js';
 import { createEshopClient, createTokenProvider } from '../eshop/index.js';
 import { startGrokTaskSweeper, type GrokTaskSweeper } from '../grok/sweeper.js';
 import { createAdminTextHandler } from '../handlers/admin.js';
@@ -26,6 +27,12 @@ export function createAdminProfile(shared: Shared): BotProfile {
   });
   const eshop = createEshopClient({ baseUrl: config.ESHOP_API_BASE, tokenProvider, log: logger });
   const model = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+  // T16: tickets live in the enduser container; config validation guarantees the URL.
+  const enduser = createEnduserClient({
+    baseUrl: config.ENDUSER_INTERNAL_URL ?? '',
+    token: config.INTERNAL_NOTIFY_TOKEN ?? '',
+    log: logger,
+  });
   const adminNotifier = createDirectAdminNotifier({
     adminUserIds: config.ADMIN_USER_IDS,
     replier,
@@ -46,6 +53,7 @@ export function createAdminProfile(shared: Shared): BotProfile {
     jobs,
     grok,
     eshop,
+    enduser,
     model,
     config,
     log: logger,

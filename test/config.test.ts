@@ -66,10 +66,10 @@ describe('loadConfig', () => {
   it('requires allowlist, eshop credentials and Anthropic key when BOT_PROFILE=admin', () => {
     const admin = { ...required, BOT_PROFILE: 'admin' };
     expect(() => loadConfig(admin)).toThrow(
-      /ADMIN_USER_IDS[\s\S]*ESHOP_BOT_USERNAME[\s\S]*ESHOP_BOT_PASSWORD[\s\S]*ANTHROPIC_API_KEY/,
+      /ADMIN_USER_IDS[\s\S]*ESHOP_BOT_USERNAME[\s\S]*ESHOP_BOT_PASSWORD[\s\S]*ANTHROPIC_API_KEY[\s\S]*ENDUSER_INTERNAL_URL/,
     );
     expect(() => loadConfig({ ...admin, ADMIN_USER_IDS: ' , ' })).toThrow(/ADMIN_USER_IDS/);
-    const cfg = loadConfig({
+    const filled = {
       ...admin,
       ADMIN_USER_IDS: 'Ua, Ub ,,Uc',
       ESHOP_BOT_USERNAME: 'bot',
@@ -77,9 +77,13 @@ describe('loadConfig', () => {
       ANTHROPIC_API_KEY: 'sk-test',
       ESHOP_API_BASE: 'https://api.test/v1/',
       ADMIN_NOTIFY_URL: 'http://linebot-admin:8090/internal/notify',
-    });
+    };
+    expect(() => loadConfig(filled)).toThrow(/ENDUSER_INTERNAL_URL/);
+    const cfg = loadConfig({ ...filled, ENDUSER_INTERNAL_URL: 'http://linebot:8090/' });
     expect(cfg.ADMIN_USER_IDS).toEqual(['Ua', 'Ub', 'Uc']);
     expect(cfg.ESHOP_API_BASE).toBe('https://api.test/v1');
+    expect(cfg.ENDUSER_INTERNAL_URL).toBe('http://linebot:8090');
+    expect(cfg.CONFIRMATION_TTL_MS).toBe(600000);
     // The enduser profile never requires the admin settings.
     expect(loadConfig({ ...required, ADMIN_USER_IDS: 'Ua' }).ADMIN_USER_IDS).toEqual(['Ua']);
   });

@@ -79,12 +79,23 @@ export const configSchema = z.object({
   TICKET_AUTO_CLOSE_MS: intWithDefault(86400000),
   /** How long after a Grok task closed a late `done` callback is still delivered (T15; default 7 d). */
   GROK_FOLLOWUP_WINDOW_MS: intWithDefault(604800000),
+  /** Admin bot: the enduser bot's internal origin for `/internal/reply` + `/internal/tickets` (T16); e.g. `http://linebot:8090`. */
+  ENDUSER_INTERNAL_URL: z.preprocess(
+    emptyToUndefined,
+    z
+      .url()
+      .transform((u) => u.replace(/\/+$/, ''))
+      .optional(),
+  ),
+  /** How long a staged customer reply waits for the admin's `Y` (T16; default 10 min). */
+  CONFIRMATION_TTL_MS: intWithDefault(600000),
 });
 
 /**
  * Cross-field rules:
  * - a configured Grok webhook needs a callback URL and token;
- * - the admin profile needs an allowlist, eshop bot credentials and an Anthropic key.
+ * - the admin profile needs an allowlist, eshop bot credentials, an Anthropic key and the
+ *   enduser bot's internal URL.
  */
 const validatedConfigSchema = configSchema.superRefine((c, ctx) => {
   if (c.GROK_WEBHOOK_URL) {
@@ -110,6 +121,7 @@ const validatedConfigSchema = configSchema.superRefine((c, ctx) => {
       'ESHOP_BOT_USERNAME',
       'ESHOP_BOT_PASSWORD',
       'ANTHROPIC_API_KEY',
+      'ENDUSER_INTERNAL_URL',
     ] as const) {
       if (!c[field]) {
         ctx.addIssue({

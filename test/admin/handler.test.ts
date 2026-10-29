@@ -21,6 +21,7 @@ import {
 import {
   deferred,
   endTurn,
+  fakeEnduser,
   fakeEshop,
   fakeModel,
   LIST_ORDERS_INPUT,
@@ -52,6 +53,7 @@ function setup(
     jobs: h.jobs,
     grok: { configured: true },
     eshop,
+    enduser: fakeEnduser(),
     model: model.client,
     config: {
       ADMIN_USER_IDS: [ADMIN],
@@ -59,6 +61,7 @@ function setup(
       ADMIN_MAX_TOOL_ROUNDS: 4,
       REPLY_DEADLINE_MS: 5000,
       CONTEXT_MESSAGES: 6,
+      CONFIRMATION_TTL_MS: 600_000,
       ...configOver,
     },
     log,

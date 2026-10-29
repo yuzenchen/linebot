@@ -6,6 +6,7 @@ import { createGrokTasksRepo } from './grokTasks.js';
 import { createIncidentsRepo } from './incidents.js';
 import { createJobsRepo } from './jobs.js';
 import { createMessagesRepo } from './messages.js';
+import { createPendingConfirmationsRepo } from './pendingConfirmations.js';
 import { createPushLogRepo } from './pushLog.js';
 import { createSuggestionsRepo } from './suggestions.js';
 import { createTicketsRepo } from './tickets.js';
@@ -25,6 +26,7 @@ export function createRepos(db: Database) {
     grokTasks: createGrokTasksRepo(db),
     adminQueries: createAdminQueriesRepo(db),
     tickets: createTicketsRepo(db),
+    pendingConfirmations: createPendingConfirmationsRepo(db),
   };
 }
 

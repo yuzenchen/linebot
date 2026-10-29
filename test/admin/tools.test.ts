@@ -13,7 +13,14 @@ import type { GrokTask } from '../../src/grok/gateway.js';
 import { createJobHandlers } from '../../src/jobs/handlers.js';
 import { JobQueue } from '../../src/jobs/queue.js';
 import { fakeHealth, harness, healthResult, jobRows, silent } from '../handlers/helpers.js';
-import { fakeEshop, LIST_ORDERS_INPUT, order, toolUse, type FakeEshop } from './fakes.js';
+import {
+  fakeEnduser,
+  fakeEshop,
+  LIST_ORDERS_INPUT,
+  order,
+  toolUse,
+  type FakeEshop,
+} from './fakes.js';
 
 const FORBIDDEN = [
   'minimum',
@@ -45,6 +52,7 @@ describe('ADMIN_TOOL_DEFS', () => {
       'stats',
       'health',
       'report_issue',
+      'reply_customer',
     ]);
     for (const t of ADMIN_TOOL_DEFS) expect(t.strict).toBe(true);
   });
@@ -118,6 +126,8 @@ function setup(over: Partial<ToolExecutorDeps> = {}) {
     repos: h.repos,
     jobs: h.jobs,
     grok: { configured: true },
+    enduser: fakeEnduser(),
+    confirmationTtlMs: 600_000,
     userId: 'Uadmin',
     userText: '今天有幾筆未付款',
     messageId: 1,

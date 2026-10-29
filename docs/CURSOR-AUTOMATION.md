@@ -32,6 +32,10 @@ linebot 會把需要後援的任務 POST 到你的 Cursor Automations webhook，
 - 做不到回 `failed`，`text` 寫原因。
 - 15 分鐘內沒有 `done` 或 `failed`，linebot 會自己把任務標成逾時並改走人工。
 
+## 2a. 事後補充答案
+
+任務已回 `done` 或 `failed` 之後，若人工（例如在 Cursor 對話裡）查到答案，agent 可以在 **7 天內**再 POST 一次 `status=done` 並附 `text`，linebot 會把它當成專人回覆推給該客戶（同一任務最多 5 次）。`incident_triage` 與 `summarize_suggestion` 不適用。
+
 ## 3. automation prompt 建議寫法
 
 把下面這段放進 automation 的 prompt（payload 本身已含詳細 `instructions`，prompt 只要交代流程）：

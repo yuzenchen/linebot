@@ -146,9 +146,20 @@ CREATE INDEX IF NOT EXISTS idx_tickets_user_status ON tickets (user_id, status);
 CREATE INDEX IF NOT EXISTS idx_tickets_status_updated ON tickets (status, updated_at);
 `;
 
+const pendingConfirmations = `
+CREATE TABLE IF NOT EXISTS pending_confirmations (
+  admin_user_id TEXT PRIMARY KEY,
+  ticket_id INTEGER,
+  text TEXT,
+  created_at TEXT,
+  expires_at TEXT
+);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
   { version: 3, name: '003_admin_queries', sql: adminQueries },
   { version: 4, name: '004_tickets', sql: tickets },
+  { version: 5, name: '005_pending_confirmations', sql: pendingConfirmations },
 ];

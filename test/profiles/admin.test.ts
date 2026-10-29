@@ -25,6 +25,7 @@ const adminEnv = {
   ESHOP_BOT_USERNAME: 'bot',
   ESHOP_BOT_PASSWORD: 'pw',
   ANTHROPIC_API_KEY: 'sk-test',
+  ENDUSER_INTERNAL_URL: 'http://127.0.0.1:1',
 };
 
 function setup(env: Record<string, string> = adminEnv) {

@@ -23,6 +23,7 @@ import { healthRaw } from '../handlers/incident.js';
 import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
 import { logger } from '../logger.js';
+import { EnduserClientError, type EnduserClient } from './enduserClient.js';
 
 /** ADMIN-HANDLER-DESIGN §3–§4: strict tool definitions and their read-only executors. */
 
@@ -69,6 +70,15 @@ export const reportIssueInput = z.strictObject({
   description: z.string().describe('問題摘要：現象、影響範圍、發生時間，繁中 1 到 3 句'),
   relatedOrderIds: z.array(z.string()).describe('相關訂單編號，最多 5 筆；沒有為空陣列'),
 });
+export const replyCustomerInput = z.strictObject({
+  ticket_id: z
+    .number()
+    .describe('工單編號的數字部分，T042 就是 42；只能用管理員提供或工單通知裡出現的編號'),
+  text: z.string().describe('要送給客戶的純文字內容，繁中，最多 1000 字'),
+});
+
+/** Max customer reply length (mirrors `/internal/reply`). */
+export const MAX_REPLY_TEXT = 1000;
 
 function toolDef(name: string, description: string, schema: z.ZodObject): Anthropic.Beta.BetaTool {
   const { $schema: _drop, ...json } = z.toJSONSchema(schema) as Record<string, unknown>;
@@ -121,6 +131,11 @@ export const ADMIN_TOOL_DEFS: readonly Anthropic.Beta.BetaTool[] = [
     '把功能異常轉給技術分析（非同步，結果稍後推播給管理員）。只有在使用者描述具體功能異常或客人回報的問題時呼叫，且先用其他工具查過相關訂單；單純問系統是否正常時不要呼叫。每次對話最多一次。',
     reportIssueInput,
   ),
+  toolDef(
+    'reply_customer',
+    '替管理員準備一則要送給工單客戶的回覆；不會直接送出，會先請管理員確認（回 Y 才送出）。管理員說「跟 T042 的客戶說…」「回覆 T042 …」時呼叫；工單編號必須來自管理員或工單通知，不要自己猜。',
+    replyCustomerInput,
+  ),
 ];
 
 // ---- executor ------------------------------------------------------------------------------
@@ -136,14 +151,26 @@ export interface ToolCallRecord {
   /** `reveal_pii` after the PII gate (only for tools that have it). */
   revealHonoured?: boolean;
   taskId?: number;
+  ticketId?: number;
+}
+
+/** A customer reply staged by `reply_customer`, awaiting the admin's `Y`. */
+export interface StagedReply {
+  ticketId: number;
+  display: string;
+  text: string;
 }
 
 export interface ToolExecutorDeps {
   eshop: EshopClient;
   health: HealthChecker;
-  repos: Pick<Repos, 'incidents'>;
+  repos: Pick<Repos, 'incidents' | 'pendingConfirmations'>;
   jobs: Pick<JobQueue, 'enqueue'>;
   grok: Pick<GrokGateway, 'configured'>;
+  /** T16: ticket reads go to the enduser bot. */
+  enduser: Pick<EnduserClient, 'getTicket'>;
+  /** `CONFIRMATION_TTL_MS`. */
+  confirmationTtlMs: number;
   userId: string;
   /** This message only; drives the PII gate. */
   userText: string;
@@ -166,6 +193,8 @@ export interface ToolExecutor {
   readonly records: ToolCallRecord[];
   /** True once unmasked data was actually returned to the model. */
   readonly piiRevealed: boolean;
+  /** The last reply staged by `reply_customer` during this run, if any. */
+  readonly staged: StagedReply | null;
 }
 
 const isoWithOffset = z.iso.datetime({ offset: true });
@@ -222,6 +251,7 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
   const records: ToolCallRecord[] = [];
   let piiRevealed = false;
   let reported = false;
+  let staged: StagedReply | null = null;
 
   /** Applies the PII gate: the model's flag counts only when this message explicitly asks. */
   function honourReveal(tool: string, requested: boolean): boolean {
@@ -371,6 +401,35 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
     return { taskId, queued: true };
   }
 
+  /** SPEC-ADMIN §12.3: stages the reply for the admin's `Y`; never sends. */
+  async function replyCustomer(input: z.infer<typeof replyCustomerInput>, rec: ToolCallRecord) {
+    const ticketId = Math.trunc(input.ticket_id);
+    if (!Number.isFinite(ticketId) || ticketId <= 0)
+      throw new ToolInputError('工單編號必須是正整數');
+    rec.ticketId = ticketId;
+    const text = input.text.trim();
+    if (text.length === 0) throw new ToolInputError('回覆內容不可空白');
+    if (text.length > MAX_REPLY_TEXT) throw new ToolInputError(`回覆內容最多 ${MAX_REPLY_TEXT} 字`);
+    let ticket;
+    try {
+      ticket = await deps.enduser.getTicket(ticketId);
+    } catch (err) {
+      if (err instanceof EnduserClientError) throw new ToolInputError(err.userMessage);
+      throw err;
+    }
+    if (ticket.status === 'closed') throw new ToolInputError(`${ticket.display} 已關閉，無法回覆`);
+    repos.pendingConfirmations.set({
+      adminUserId: userId,
+      ticketId,
+      text,
+      now: now(),
+      ttlMs: deps.confirmationTtlMs,
+    });
+    staged = { ticketId, display: ticket.display, text };
+    log.info({ userId, ticketId }, 'reply_customer staged');
+    return { staged: true, display: ticket.display, text };
+  }
+
   async function execute(call: Anthropic.Beta.BetaToolUseBlock, rec: ToolCallRecord) {
     switch (call.name) {
       case 'list_orders':
@@ -390,6 +449,8 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
         return healthTool();
       case 'report_issue':
         return reportIssue(parse(reportIssueInput, call.input), rec);
+      case 'reply_customer':
+        return replyCustomer(parse(replyCustomerInput, call.input), rec);
       default:
         throw new ToolInputError(`未知工具 ${call.name}`);
     }
@@ -453,6 +514,9 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
     records,
     get piiRevealed() {
       return piiRevealed;
+    },
+    get staged() {
+      return staged;
     },
     async runRound(calls) {
       const settled = await Promise.allSettled(calls.map((c, i) => runOne(c, i)));
