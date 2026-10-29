@@ -16,7 +16,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "export:suggestions": "tsx src/cli/export-suggestions.ts",
-    "list-users": "tsx src/cli/list-users.ts"
+    "list-users": "tsx src/cli/list-users.ts",
+    "classify": "tsx scripts/classify.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

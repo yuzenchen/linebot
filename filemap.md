@@ -17,9 +17,19 @@
 - `src/logger.ts` — pino
 - `src/texts.ts` — 所有使用者可見文案
 - `src/server.ts` — Hono app、/health、路由掛載、graceful shutdown
-- `src/line/` — LINE client、webhook 驗簽與去重、Replier（reply→push fallback）
-- `src/handlers/` — dispatcher、message 主流程、incident、feature、handoff
-- `src/classifier/` — 分類器介面、Anthropic 實作、規則式 fallback、知識庫載入
+- `src/line/client.ts` — `createLineClient()` 建 `MessagingApiClient`；`LineApi` 介面（reply / push / showLoading，測試傳 fake）
+- `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
+- `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
+- `src/handlers/dispatcher.ts` — `createDispatcher()`：只處理 user source；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
+- `src/handlers/` — message 主流程、incident、feature、handoff（T5 / T7 建立）
+- `src/classifier/types.ts` — 五類 `categories`、zod `classificationSchema`、`Classifier` / `ClassifyInput` / `ClassifyResult` 型別
+- `src/classifier/knowledge.ts` — `loadKnowledge()`：讀 `knowledge/*.md`（排除 welcome.md）依檔名串接、快取；`resetKnowledgeCache()`
+- `src/classifier/prompt.ts` — `buildSystemBlocks()`：固定規則 block + 知識庫 block（cache_control）；改分類規則來這裡
+- `src/classifier/rule.ts` — `RuleClassifier` 關鍵字規則（無 key 或模型失敗時用）
+- `src/classifier/anthropic.ts` — `AnthropicClassifier`：`messages.parse()` + zod 結構化輸出、effort low、20 秒逾時、記 usage；`buildMessages()` 合併同角色
+- `src/classifier/index.ts` — `normalize()` 信心度降級、`FallbackClassifier`、`createClassifier()` / `createClassifierFromConfig()`
+- `scripts/classify.ts` — `npm run classify -- "文字"` 打真 API 手動測分類（需 ANTHROPIC_API_KEY，不進測試）
+- `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
 - `src/health/` — pet eshop health check 呼叫與快取
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/db/` — SQLite 連線、migrations、repositories
@@ -35,6 +45,8 @@
 - `test/` — vitest 測試
 - `test/db/` — migrations 與 repository 測試（in-memory SQLite）
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
+- `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
+- `test/handlers/` — dispatcher 測試
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
 - `.dockerignore` — Docker build context 排除清單
 - `.env.example` — 全部環境變數與說明

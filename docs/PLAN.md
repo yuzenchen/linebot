@@ -22,7 +22,7 @@
 
 ## T3 LINE webhook 與 Replier（Careful）— 依賴：T2
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 `src/line/client.ts` 建 `MessagingApiClient`。`src/line/webhook.ts`：Hono route 讀 raw body，`validateSignature(body, secret, header)` 失敗回 401；解析 events，逐一 `events.insertIfNew`，新事件交 `dispatcher.dispatch(event)`（`setImmediate`，catch 全部例外記 error）；立刻回 200。`src/line/replier.ts`：`reply(replyToken, messages[])`、`push(userId, messages[], reason)`、`showLoading(userId, seconds)`、`replyOrPush(replyToken, userId, messages, reason)`；reply 遇 HTTP 400 或錯誤訊息含 `Invalid reply token` 改 push；同一 replyToken 只用一次（記憶體 Set）；push 成功後寫 `push_log`；訊息陣列最多 5 則、文字最長 5000 字截斷。`src/handlers/dispatcher.ts`：只處理 `source.type === 'user'`；`message/text` → `handleTextMessage`（T5 實作，此處先呼叫佔位）；其他 message type → SPEC 5.8 固定回覆；`follow` → 歡迎詞（讀 `knowledge/welcome.md`，T4 會建，此處先有 fallback 文案）；`unfollow` → `users.followed = 0`；群組事件只 log。所有進出訊息寫 `messages`。
 
@@ -30,7 +30,7 @@
 
 ## T4 分類器與知識庫（Medium）— 依賴：T2
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 `knowledge/` 建 SPEC 第 8 節全部檔案，內容依 `E:\website\README.md` 與 `E:\website\wama-house-backend\README.md` 的功能描述整理成 FAQ 口吻（商品分類、組合包、加價購、免運 NT$500、LINE Pay / 銀行轉帳 / 超商代碼、超商取貨、會員與經銷）；不確定的事實寫「請洽客服確認」而非編造；絕不放金鑰、網址、帳號。`src/classifier/knowledge.ts` 載入並串接。`src/classifier/types.ts` zod schema（SPEC 5.3）。`src/classifier/anthropic.ts`：使用 `@anthropic-ai/sdk` 的 `client.messages.parse()` 配 zod schema（實作前先讀 claude-api skill 的 `typescript/claude-api/README.md` 與 `tool-use.md` 結構化輸出段落，不憑記憶寫 SDK 呼叫），model 來自 config，`output_config.effort: "low"`，system 為陣列：`[固定規則 block, 知識庫 block (cache_control ephemeral)]`，messages 為最近脈絡（in→user、out→assistant）+ 本則；`max_tokens` 1024；逾時 20 秒；任何錯誤丟出讓上層退回規則式。`src/classifier/rule.ts` 關鍵字規則。`src/classifier/index.ts` `createClassifier(config)`：有 key → Anthropic 包一層 fallback 到 Rule；無 key → Rule。信心度降級規則（SPEC 5.3）放在 `normalize()`。
 

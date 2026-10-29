@@ -278,7 +278,7 @@ interface GrokGateway { run(task: GrokTask): Promise<GrokResult> }
 ## 11. 待確認事項（不阻塞 MVP）
 
 - [ ] Grok bot webhook 的網址、驗證方式、同步或非同步回應格式（使用者稍後提供）。
-- [ ] `ADMIN_LINE_USER_ID`（使用者加好友後可從 `list-users` CLI 查到）。
+- [x] `ADMIN_LINE_USER_ID`：已取得，填在 `.env`（不進版控）。
 - [ ] Cloudflare Tunnel 的子網域名稱。
 - [ ] 知識庫第一版內容校正。
 - [ ] Messaging API channel 的建立（與 `PetEshop Info` 裡的 LINE Pay / LINE Login channel 不同，需要另外在 LINE Developers 建 Messaging API channel，並在 LINE Official Account Manager 關閉「自動回應訊息」、開啟 Webhook）。

@@ -2,35 +2,60 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
+import type { webhook } from '@line/bot-sdk';
 import { Hono } from 'hono';
 import { config } from './config.js';
-import { closeDb, openDatabase } from './db/index.js';
+import { closeDb, getDb } from './db/index.js';
+import { createRepos, type Repos } from './db/repos.js';
+import { createDispatcher, defaultWelcomeText } from './handlers/dispatcher.js';
+import { createLineClient } from './line/client.js';
+import { Replier } from './line/replier.js';
+import { createWebhookRoute } from './line/webhook.js';
 import { logger } from './logger.js';
+import { texts } from './texts.js';
 
 // Resolves to the project root from both src/ (tsx) and dist/ (node).
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
   version: string;
 };
 
-export function createApp(): Hono {
+export interface AppDeps {
+  channelSecret: string;
+  repos: Pick<Repos, 'events'>;
+  dispatch: (event: webhook.Event) => Promise<void>;
+}
+
+/** Without `deps` the webhook route exists but answers 503 (tests, misconfiguration). */
+export function createApp(deps?: AppDeps): Hono {
   const app = new Hono();
 
   app.get('/health', (c) =>
     c.json({ status: 'ok', uptime: Math.round(process.uptime()), version: pkg.version }),
   );
 
-  // Placeholder: signature check, dedupe and dispatch arrive in T3.
-  app.post('/webhook', async (c) => {
-    await c.req.text();
-    return c.json({ ok: true });
-  });
+  if (deps) {
+    app.route('/webhook', createWebhookRoute(deps));
+  } else {
+    app.post('/webhook', (c) => c.json({ error: 'not configured' }, 503));
+  }
 
   return app;
 }
 
 function main(): void {
-  openDatabase();
-  const app = createApp();
+  const db = getDb();
+  const repos = createRepos(db);
+  const replier = new Replier(createLineClient(), repos);
+  const dispatch = createDispatcher({
+    repos,
+    replier,
+    // Placeholder until T5 provides the real text handler.
+    handleText: async ({ replyToken, userId }) => {
+      await replier.replyOrPush(replyToken, userId, [texts.placeholderAck], 'placeholder');
+    },
+    welcomeText: defaultWelcomeText,
+  });
+  const app = createApp({ channelSecret: config.LINE_CHANNEL_SECRET, repos, dispatch });
   const server = serve({ fetch: app.fetch, port: config.PORT, hostname: '0.0.0.0' }, (info) => {
     logger.info({ port: info.port }, 'linebot listening');
   });
