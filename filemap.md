@@ -7,7 +7,7 @@
 - `docs/PLAN.md` — 任務清單與狀態
 - `docs/LINE-SETUP.md` — 使用者操作：建 Messaging API channel、關自動回應、開 webhook、tunnel
 - `docs/VERIFY.md` — T9 驗證結果（T9 建立）
-- `README.md` — 使用者操作手冊：本機啟動、LINE 設定、Pi 部署（T8 建立）
+- `README.md` — 使用者操作手冊：本機啟動、webhook、環境變數、指令、Pi 部署、常見問題
 - `knowledge/` — 客服知識庫 Markdown，啟動時全讀進 prompt；改 FAQ 內容來這裡（T4 建立）
 - `package.json`、`package-lock.json` — 相依套件與 npm scripts
 - `tsconfig.json` — TypeScript 設定（只編 `src/` → `dist/`）
@@ -35,6 +35,8 @@
 - `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
 - `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
+- `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（POST + HMAC，暫定 contract 寫在 doc comment）、`createGrokGateway(config)`；Grok webhook 介面確定後改這裡
+- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 HMAC（401），目前回 501（callback 模式待定）
 - `src/db/` — SQLite 連線、migrations、repositories
 - `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
 - `src/db/migrate.ts` — `runMigrations(db)`：`schema_migrations` 記錄、依版本套用、可重複執行
@@ -44,10 +46,16 @@
 - `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
 - `src/jobs/` — 背景任務佇列與 handlers
 - `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
-- `src/cli/` — export-suggestions、list-users
+- `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`（zod 驗 payload、Null 時 skipped、暫時性失敗重試）
+- `src/cli/export-suggestions.ts` — `npm run export:suggestions`：需求建議 Markdown 表格寫到 `${DATA_DIR}/exports/suggestions-YYYY-MM-DD.md`
+- `src/cli/list-users.ts` — `npm run list-users [-- --json]`：使用者、handoff、最後訊息時間與訊息數
+- `src/cli/render.ts` — `renderSuggestionsMarkdown()`（純函式，可單測）、`localDate()`
+- `src/cli/bootstrap.ts` — CLI 共用：讀 `.env`、開 `DATA_DIR` 的 DB、補 LINE 佔位值（logger 需要）
 - `test/` — vitest 測試
 - `test/db/` — migrations 與 repository 測試（in-memory SQLite）
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
+- `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
+- `test/grok/` — WebhookGrokGateway（fake fetch、HMAC）與 `/grok/callback` 路由測試
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
 - `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
 - `test/health/` — health checker 測試（fake fetch）

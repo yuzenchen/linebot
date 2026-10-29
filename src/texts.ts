@@ -14,7 +14,18 @@ export const texts = {
     '我這邊查到網站目前運作正常，問題可能和個別帳號或操作有關。方便告訴我：1. 是哪個頁面或功能 2. 操作步驟 3. 發生時間 4. 有沒有錯誤訊息或截圖？我會轉給專人確認。',
   incidentConfirmed: '已確認網站目前有異常，我們正在處理，恢復後會再通知你。造成不便很抱歉。',
   fallbackError: '系統忙碌中，請稍後再試，或留下你的問題，我們會盡快回覆。',
+  grokUnavailable: '這個問題已轉交人工處理，專人會再回覆你，謝謝耐心等候。',
 } as const;
+
+/** Admin push when a service question could not be answered by Grok (SPEC 5.6). */
+export function adminServiceQuestionNotice(d: { userId: string; text: string }): string {
+  return `[待人工回覆] 使用者 ${d.userId.slice(0, 8)} 問：${d.text}\n（Grok 未設定或無法回答）`;
+}
+
+/** Admin push carrying Grok's incident triage. */
+export function adminTriageNotice(d: { incidentId: number; text: string }): string {
+  return `[異常分析] #${d.incidentId}\n${d.text}`;
+}
 
 export interface AdminIncidentDetail {
   userId: string;

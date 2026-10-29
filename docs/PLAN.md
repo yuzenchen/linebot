@@ -46,7 +46,7 @@
 
 ## T6 Grok gateway 與 jobs handlers（Medium）— 依賴：T5
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受，webhook 契約待依 Cursor Automations 調整）
 
 `src/grok/gateway.ts` 介面（SPEC 5.6）、`NullGrokGateway`、`WebhookGrokGateway` 骨架（POST + HMAC，回應解析留 TODO 並以 config 判斷是否啟用）。`src/jobs/handlers.ts`：`service_question`（結果 push 給使用者；Null 時 push 固定文案 + 通知管理員）、`incident_triage`（結果 push 管理員；Null 時 skipped）、`summarize_suggestion`（更新 suggestions；Null 時 skipped）。`POST /grok/callback` 路由骨架（驗 HMAC，回 501 直到介面確定）。
 

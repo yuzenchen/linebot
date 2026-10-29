@@ -10,7 +10,10 @@ import { createRepos, type Repos } from './db/repos.js';
 import { createClassifierFromConfig } from './classifier/index.js';
 import { createDispatcher, defaultWelcomeText } from './handlers/dispatcher.js';
 import { createTextMessageHandler } from './handlers/message.js';
+import { createGrokCallbackRoute, type GrokCallbackDeps } from './grok/callback.js';
+import { createGrokGateway } from './grok/gateway.js';
 import { createHealthChecker } from './health/check.js';
+import { createJobHandlers } from './jobs/handlers.js';
 import { JobQueue } from './jobs/queue.js';
 import { createLineClient } from './line/client.js';
 import { Replier } from './line/replier.js';
@@ -26,9 +29,11 @@ export interface AppDeps {
   channelSecret: string;
   repos: Pick<Repos, 'events'>;
   dispatch: (event: webhook.Event) => Promise<void>;
+  /** `/grok/callback` HMAC secret; the route answers 501 until callback mode is defined. */
+  grokCallback?: GrokCallbackDeps;
 }
 
-/** Without `deps` the webhook route exists but answers 503 (tests, misconfiguration). */
+/** Without `deps` the webhook and grok callback routes exist but answer 503 (tests, misconfiguration). */
 export function createApp(deps?: AppDeps): Hono {
   const app = new Hono();
 
@@ -38,12 +43,16 @@ export function createApp(deps?: AppDeps): Hono {
 
   if (deps) {
     app.route('/webhook', createWebhookRoute(deps));
+    app.route('/grok/callback', createGrokCallbackRoute(deps.grokCallback));
   } else {
     app.post('/webhook', (c) => c.json({ error: 'not configured' }, 503));
+    app.post('/grok/callback', (c) => c.json({ error: 'not configured' }, 503));
   }
 
   return app;
 }
+
+const JOB_MAX_ATTEMPTS = 5;
 
 function main(): void {
   const db = getDb();
@@ -55,8 +64,15 @@ function main(): void {
     timeoutMs: config.HEALTH_CHECK_TIMEOUT_MS,
     cacheMs: config.HEALTH_CACHE_MS,
   });
-  const jobs = new JobQueue(repos.jobs);
-  // T6: jobs.start(handlers) — not started yet so pending jobs are not burned as `no_handler`.
+  const jobs = new JobQueue(repos.jobs, { maxAttempts: JOB_MAX_ATTEMPTS });
+  const grok = createGrokGateway(config, logger);
+  const handlers = createJobHandlers({
+    repos,
+    replier,
+    grok,
+    config,
+    maxAttempts: JOB_MAX_ATTEMPTS,
+  });
   const handleText = createTextMessageHandler({ repos, replier, classifier, health, jobs, config });
   const dispatch = createDispatcher({
     repos,
@@ -64,9 +80,16 @@ function main(): void {
     handleText,
     welcomeText: defaultWelcomeText,
   });
-  const app = createApp({ channelSecret: config.LINE_CHANNEL_SECRET, repos, dispatch });
+  const app = createApp({
+    channelSecret: config.LINE_CHANNEL_SECRET,
+    repos,
+    dispatch,
+    grokCallback: { secret: config.GROK_WEBHOOK_SECRET },
+  });
   const server = serve({ fetch: app.fetch, port: config.PORT, hostname: '0.0.0.0' }, (info) => {
-    logger.info({ port: info.port }, 'linebot listening');
+    logger.info({ port: info.port, grokConfigured: grok.configured }, 'linebot listening');
+    jobs.start(handlers);
+    logger.info('job queue started');
   });
 
   let shuttingDown = false;
