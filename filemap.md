@@ -4,7 +4,8 @@
 
 - `CLAUDE.md` — 給 agent 的最短專案規則
 - `docs/SPEC.md` — 實作規格（唯一事實來源）
-- `docs/PLAN.md` — 任務清單與狀態
+- `docs/PLAN.md` — 任務清單與狀態（含第二階段）
+- `docs/SPEC-ADMIN.md` — 第二階段：管理端 bot 規格草稿
 - `docs/CURSOR-AUTOMATION.md` — 使用者操作：Cursor automation 端的 prompt、callback 格式、測試方式
 - `docs/KNOWLEDGE-REVIEW.md` — 知識庫審閱檔（給 pet eshop 專案校對用，由 scratch 腳本產生）
 - `docs/LINE-SETUP.md` — 使用者操作：建 Messaging API channel、關自動回應、開 webhook、tunnel
