@@ -12,6 +12,7 @@ const expectedTables = [
   'jobs',
   'push_log',
   'grok_tasks',
+  'admin_queries',
   'schema_migrations',
 ];
 
@@ -28,6 +29,7 @@ describe('runMigrations', () => {
     expect(rows).toEqual([
       { version: 1, name: '001_init' },
       { version: 2, name: '002_grok_tasks' },
+      { version: 3, name: '003_admin_queries' },
     ]);
   });
 
@@ -43,6 +45,7 @@ describe('runMigrations', () => {
         'idx_push_log_created',
         'idx_incidents_status_created',
         'idx_grok_tasks_status_expires',
+        'idx_admin_queries_user_created',
       ]),
     );
   });

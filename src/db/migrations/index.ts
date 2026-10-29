@@ -112,7 +112,22 @@ CREATE TABLE IF NOT EXISTS grok_tasks (
 CREATE INDEX IF NOT EXISTS idx_grok_tasks_status_expires ON grok_tasks (status, expires_at);
 `;
 
+const adminQueries = `
+CREATE TABLE IF NOT EXISTS admin_queries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT,
+  text TEXT,
+  tools TEXT,
+  reply TEXT,
+  pii_revealed INTEGER DEFAULT 0,
+  latency_ms INTEGER,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_admin_queries_user_created ON admin_queries (user_id, created_at);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
+  { version: 3, name: '003_admin_queries', sql: adminQueries },
 ];

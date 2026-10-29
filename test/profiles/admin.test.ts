@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import { NullGrokGateway } from '../../src/grok/gateway.js';
 import { JobQueue } from '../../src/jobs/queue.js';
@@ -49,14 +49,42 @@ describe('admin profile', () => {
     expect(sentTexts(api)).toEqual([{ via: 'reply', text: texts.adminOnly }]);
   });
 
-  it('answers allowlisted users with the placeholder text (every listed id, trimmed)', async () => {
-    const { repos, api, profile } = setup();
-    await profile.handleText(inbound(repos, '今天幾筆訂單', { userId: 'Uadmin1' }));
-    await profile.handleText(inbound(repos, '庫存', { userId: 'Uadmin2' }));
-    expect(sentTexts(api).map((s) => s.text)).toEqual([
-      texts.adminPlaceholder,
-      texts.adminPlaceholder,
+  it('does not reject either listed id (trimmed) and never calls LINE for them before the model', async () => {
+    const { repos, api, shared } = setup();
+    // Allowlist membership only: the model/eshop path is covered in test/admin (fake clients).
+    const allow = new Set(shared.config.ADMIN_USER_IDS);
+    expect(allow.has('Uadmin1') && allow.has('Uadmin2')).toBe(true);
+    await createAdminProfile(shared).handleText(inbound(repos, 'hi', { userId: 'Uother' }));
+    expect(sentTexts(api)).toEqual([{ via: 'reply', text: texts.adminOnly }]);
+  });
+
+  it('start() registers job handlers and stop() is safe without a sweeper', async () => {
+    const { profile, shared } = setup();
+    const start = vi.spyOn(shared.jobs, 'start');
+    await profile.start?.();
+    expect(start).toHaveBeenCalledTimes(1);
+    const handlers = start.mock.calls[0][0];
+    expect(Object.keys(handlers).sort()).toEqual([
+      'incident_triage',
+      'service_question',
+      'summarize_suggestion',
     ]);
+    await expect(profile.stop?.()).resolves.toBeUndefined();
+    await shared.jobs.stop();
+  });
+
+  it('mounts /internal/notify and pushes relayed notices to every admin', async () => {
+    const { profile, api, db } = setup({ ...adminEnv, INTERNAL_NOTIFY_TOKEN: 'tkn' });
+    const app = new Hono();
+    profile.extraRoutes?.(app);
+    const res = await app.request('/internal/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-internal-token': 'tkn' },
+      body: JSON.stringify({ kind: 'incident', text: '網站異常' }),
+    });
+    expect(res.status).toBe(200);
+    expect(api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual(['Uadmin1', 'Uadmin2']);
+    expect(pushReasons(db)).toEqual(['relay_incident', 'relay_incident']);
   });
 
   it('falls back to push without a reply token and logs the reason', async () => {
@@ -70,7 +98,7 @@ describe('admin profile', () => {
     api.replyMessage.mockRejectedValue(new Error('boom'));
     api.pushMessage.mockRejectedValue(new Error('boom'));
     await expect(
-      profile.handleText(inbound(repos, 'hi', { userId: 'Uadmin1' })),
+      profile.handleText(inbound(repos, 'hi', { userId: 'Ustranger' })),
     ).resolves.toBeUndefined();
   });
 

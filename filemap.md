@@ -25,12 +25,17 @@
 - `src/profiles/types.ts` — `BotProfile`（`handleText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
 - `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
 - `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、Grok sweeper）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
-- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot；目前只有 `ADMIN_USER_IDS` 白名單檢查與佔位回覆，T12b 換成 Claude tool use 處理器
+- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`
 - `src/line/client.ts` — `createLineClient()` 建 `MessagingApiClient`；`LineApi` 介面（reply / push / showLoading，測試傳 fake）
 - `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
 - `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
 - `src/handlers/dispatcher.ts` — `createDispatcher()`：只處理 user source；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
 - `src/handlers/message.ts` — `createTextMessageHandler()`：SPEC 5.2 主流程（handoff hook、loading、脈絡、分類與 `REPLY_DEADLINE_MS` race、依類別分派、reply → 逾期 push、保底回覆、寫 classifications、低信心 streak）
+- `src/handlers/admin.ts` — `createAdminTextHandler()`：管理端主流程（ADMIN-HANDLER-DESIGN §5）：白名單、loading、脈絡、`runAdminQuery` 與 `REPLY_DEADLINE_MS` race（逾時先回 `adminAckPending` 再 push）、寫 `admin_queries`、含個資時以 `recordAs` 存佔位文字；`splitReply()` 切 5000 字 / 5 則
+- `src/admin/` — T12b 管理端 Claude tool-use 對話（設計：`docs/ADMIN-HANDLER-DESIGN.md`）
+- `src/admin/prompt.ts` — `ADMIN_RULES_PROMPT`（固定、帶 cache_control）、`buildDateBlock(now)` 台北日期錨點、`buildSystem(now)`、`CAP_INSTRUCTION`
+- `src/admin/tools.ts` — 7 個 strict 工具定義（zod → JSON schema）、`createToolExecutor()`（並行執行、8000 字上限、`PII_REQUEST` 個資閘門、`report_issue` 寫 incidents + enqueue `incident_triage`）、`ToolCallRecord`
+- `src/admin/loop.ts` — `runAdminQuery()`：`beta.messages.create` 手寫迴圈（server-side fallback、effort medium、tool_choice auto / 上限時 none + 系統訊息、stop_reason 對應、逾時與總預算），永不 reject；`AdminModelClient` 介面供測試注入 fake
 - `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
 - `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
 - `src/handlers/handoff.ts` — `createHandoffService()`：SPEC 5.7 人工轉接（關鍵字 / 連續 2 則低信心 / `/handoff` 進入、24h 到期自動解除、期間轉發管理員）與管理員指令 `/status`、`/resume`、`/handoff`、`/help`
@@ -44,7 +49,9 @@
 - `test/classifier/` — 分類器、normalize、prompt、知識庫載入測試（mock client）
 - `src/notify/` — T13 管理通知搬家（客戶端 → 管理端）
 - `src/notify/adminNotifier.ts` — `createAdminNotifier()`：客戶端所有管理通知的唯一出口；有 `ADMIN_NOTIFY_URL` + `INTERNAL_NOTIFY_TOKEN` 時 POST 到管理端（`x-internal-token`，5 秒逾時），失敗退回 push `ADMIN_LINE_USER_ID`（reason `admin_<kind>`），都沒有就只寫 log；不會 throw
+- `src/notify/directAdminNotifier.ts` — `createDirectAdminNotifier()`：管理端 profile 用的 `AdminNotifier`，直接 push 給 `ADMIN_USER_IDS` 全員（reason `admin_<kind>`，逐一 catch）
 - `src/notify/internalRoute.ts` — `createInternalNotifyRoute()`：管理端 `POST /internal/notify`（無 token 503、token 不符 401、zod 400），加「[客服 bot] 」前綴 push 給 `ADMIN_USER_IDS` 全員（reason `relay_<kind>`）
+- `test/admin/` — `fakes.ts`（腳本化 fake model client、fake EshopClient）、`tools.test.ts`（schema strict 檢查、日期錨點、各工具 executor、PII 閘門、report_issue）、`handler.test.ts`（白名單、請求形狀、並行工具、輪數上限、deadline、錯誤對應、splitReply）
 - `test/notify/` — notifier（relay / 500 / 網路錯誤 / 逾時 fallback、只寫 log、不 reject）與 `/internal/notify`（503 / 401 / 400 / 200 計數、前綴規則）
 - `src/eshop/` — pet eshop 後台唯讀客戶端（T11；SPEC-ADMIN 第 4–6 節）
 - `src/eshop/types.ts` — 後端回應 zod schema（loose）、Order / Product / Stats 型別、狀態枚舉與 zh-TW 標籤表（`statusLabel` 等）、`ListOrdersParams`
@@ -65,6 +72,7 @@
 - `src/db/time.ts` — `now()` / `nowIso()` 與 `setClock()`（測試用假時鐘）
 - `src/db/repos.ts` — `createRepos(db)` 一次建立全部 repository
 - `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
+- `src/db/adminQueries.ts` — `createAdminQueriesRepo(db)`：管理端每次查詢一列（`insert` / `recent`），migration 003
 - `src/db/grokTasks.ts` — `createGrokTasksRepo(db)`：派送給 Cursor agent 的任務（`insert` / `get` / `setStatus` / `listExpired` / `countOpen`），migration 002
 - `src/jobs/` — 背景任務佇列與 handlers
 - `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
@@ -74,7 +82,7 @@
 - `src/cli/render.ts` — `renderSuggestionsMarkdown()`（純函式，可單測）、`localDate()`
 - `src/cli/bootstrap.ts` — CLI 共用：讀 `.env`、開 `DATA_DIR` 的 DB、補 LINE 佔位值（logger 需要）
 - `test/` — vitest 測試
-- `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo
+- `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo；`adminQueries.test.ts` 測 admin_queries repo
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
 - `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`sweeper.test.ts`（逾時處理）
@@ -83,7 +91,7 @@
 - `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
-- `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕 / 放行、push fallback、`/grok/callback` 掛載
+- `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕、push fallback、`start` / `stop`、`/grok/callback` 與 `/internal/notify` 掛載
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）
 - `.env.admin`、`data-admin/` — 管理端容器的設定與 SQLite（gitignore）
 - `.dockerignore` — Docker build context 排除清單

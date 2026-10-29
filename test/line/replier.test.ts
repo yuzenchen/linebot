@@ -105,6 +105,29 @@ describe('Replier', () => {
     expect(lastPush(db).reason).toBe('welcome');
   });
 
+  it('recordAs stores the substitute text instead of the sent text (reply, push, 400 fallback)', async () => {
+    const opts = { recordAs: ['（placeholder）'] };
+    await replier.reply('tok', 'U1', ['secret 0912345678'], opts);
+    expect(api.replyMessage).toHaveBeenCalledWith({
+      replyToken: 'tok',
+      messages: [{ type: 'text', text: 'secret 0912345678' }],
+    });
+    await replier.push('U1', ['secret 2'], 'late', opts);
+    api.replyMessage.mockRejectedValue(httpError(400));
+    expect(await replier.reply('tok2', 'U1', ['secret 3', 'secret 4'], opts)).toBe('pushed');
+    expect(api.pushMessage).toHaveBeenLastCalledWith({
+      to: 'U1',
+      messages: [
+        { type: 'text', text: 'secret 3' },
+        { type: 'text', text: 'secret 4' },
+      ],
+    });
+    const texts = repos.messages.recent('U1', 10).map((r) => r.text);
+    expect(texts).toEqual(['（placeholder）', '（placeholder）', '（placeholder）']);
+    expect(texts.join()).not.toContain('secret');
+    expect(lastPush(db).reason).toBe('reply_fallback');
+  });
+
   it('swallows showLoading failures', async () => {
     api.showLoadingAnimation.mockRejectedValue(httpError(500));
     await expect(replier.showLoading('U1')).resolves.toBeUndefined();

@@ -8,6 +8,14 @@ export type TextMessageInput = string | { type: 'text'; text: string };
 export const MAX_MESSAGES = 5;
 export const MAX_TEXT_LENGTH = 5000;
 
+export interface SendOptions {
+  /**
+   * Texts to store in `messages` (direction out) instead of what was actually sent, e.g. a
+   * placeholder when the reply contains unmasked PII (SPEC-ADMIN §6). Absent: store the sent text.
+   */
+  recordAs?: string[];
+}
+
 /** True for an HTTPFetchError-shaped error with status 400 (invalid / expired reply token). */
 export function isReplyTokenError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
@@ -37,10 +45,11 @@ export class Replier {
     replyToken: string,
     userId: string,
     messages: TextMessageInput[],
+    opts?: SendOptions,
   ): Promise<'replied' | 'pushed'> {
     if (this.usedTokens.has(replyToken)) {
       this.log.warn({ userId }, 'reply token already used, pushing instead');
-      await this.push(userId, messages, 'reply_token_reused');
+      await this.push(userId, messages, 'reply_token_reused', opts);
       return 'pushed';
     }
     this.usedTokens.add(replyToken);
@@ -51,17 +60,22 @@ export class Replier {
     } catch (err) {
       if (isReplyTokenError(err)) {
         this.log.warn({ userId, err: describe(err) }, 'reply rejected (400), falling back to push');
-        await this.push(userId, messages, 'reply_fallback');
+        await this.push(userId, messages, 'reply_fallback', opts);
         return 'pushed';
       }
       this.log.error({ userId, err: describe(err) }, 'reply failed');
       throw err;
     }
-    this.recordOut(userId, normalized);
+    this.recordOut(userId, normalized, opts);
     return 'replied';
   }
 
-  async push(userId: string, messages: TextMessageInput[], reason: string): Promise<void> {
+  async push(
+    userId: string,
+    messages: TextMessageInput[],
+    reason: string,
+    opts?: SendOptions,
+  ): Promise<void> {
     const normalized = this.normalize(messages);
     if (normalized.length === 0) return;
     try {
@@ -71,7 +85,7 @@ export class Replier {
       throw err;
     }
     this.repos.pushLog.insert({ userId, reason });
-    this.recordOut(userId, normalized);
+    this.recordOut(userId, normalized, opts);
   }
 
   /** Best effort; never throws. */
@@ -88,9 +102,10 @@ export class Replier {
     userId: string,
     messages: TextMessageInput[],
     reason: string,
+    opts?: SendOptions,
   ): Promise<'replied' | 'pushed'> {
-    if (replyToken !== undefined) return this.reply(replyToken, userId, messages);
-    await this.push(userId, messages, reason);
+    if (replyToken !== undefined) return this.reply(replyToken, userId, messages, opts);
+    await this.push(userId, messages, reason, opts);
     return 'pushed';
   }
 
@@ -112,9 +127,10 @@ export class Replier {
     });
   }
 
-  private recordOut(userId: string, messages: TextMessage[]): void {
-    for (const m of messages) {
-      this.repos.messages.insert({ userId, direction: 'out', type: 'text', text: m.text });
+  private recordOut(userId: string, messages: TextMessage[], opts?: SendOptions): void {
+    const texts = opts?.recordAs ?? messages.map((m) => m.text);
+    for (const text of texts) {
+      this.repos.messages.insert({ userId, direction: 'out', type: 'text', text });
     }
   }
 }

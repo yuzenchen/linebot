@@ -23,8 +23,14 @@ export const texts = {
   adminHelp:
     '管理員指令：\n/status 今日訊息、本月 push、待處理 jobs、人工中人數\n/resume <userId前8碼> 解除人工轉接\n/handoff <userId前8碼> 轉為人工 24 小時',
   adminOnly: '此帳號僅供內部使用。',
-  adminPlaceholder: '管理端功能建置中。',
   adminWelcome: '管理端 bot 已就緒，可以問訂單與庫存狀況。',
+  adminAckPending: '查詢中，稍後回覆。',
+  adminModelUnavailable: '模型暫時無法回應，請稍後再試。',
+  adminModelRefused: '這個問題無法處理，請換個說法再試。',
+  adminEmptyAnswer: '沒有查到可回覆的內容，請換個問法。',
+  adminToolCapNote: '（查詢步驟已達上限，以上是目前查到的資料；可加條件縮小範圍再問）',
+  adminPiiRecordPlaceholder: '（此則回覆含完整個資，內容未保存）',
+  adminTruncated: '…（內容過長，已截斷）',
 } as const;
 
 /** Admin push when a user enters human handoff (SPEC 5.7). */

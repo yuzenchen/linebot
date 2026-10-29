@@ -32,7 +32,8 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-function healthRaw(h: HealthResult): string {
+/** Compact JSON of a health result for `incidents.health_raw` (body capped at 500 chars). */
+export function healthRaw(h: HealthResult): string {
   let body: string | undefined;
   if (h.body !== undefined) {
     try {

@@ -10,7 +10,13 @@ import {
 import { orderSchema } from '../../src/eshop/types.js';
 import { sampleOrder } from './helpers.js';
 
-const order = () => orderSchema.parse(sampleOrder());
+const order = () =>
+  orderSchema.parse(
+    sampleOrder({
+      adminNote: '店家備註',
+      dealer: { shopName: '好狗店', contact: '李老闆', phone: '0987654321', note: '經銷私密備註' },
+    }),
+  );
 
 describe('maskPhone', () => {
   it('keeps first 4 and last 2', () => {
@@ -39,7 +45,11 @@ describe('maskOrder', () => {
     expect(m.shippingInfo?.storeName).toBe('全家測試店');
     expect(m.dealer?.phone).toBe('0987****21');
     expect(m.dealer?.contact).toBe('李老闆');
+    expect(m.dealer?.note).toBeUndefined();
+    expect(m.adminNote).toBe('店家備註');
     const text = describeOrder(m);
+    expect(text).not.toContain('經銷私密備註');
+    expect(text).toContain('店家備註');
     expect(text).not.toContain('ming@example.com');
     expect(text).not.toContain('0912345678');
     expect(text).not.toContain('台北市中正區');

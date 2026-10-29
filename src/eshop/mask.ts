@@ -48,6 +48,7 @@ export function maskOrder(order: Order, opts: MaskOptions = {}): MaskedOrder {
     masked.dealer = {
       ...order.dealer,
       phone: order.dealer.phone ? maskPhone(order.dealer.phone) : order.dealer.phone,
+      note: undefined,
     };
   }
   return masked;

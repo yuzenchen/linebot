@@ -111,7 +111,7 @@ T3 與 T4 可並行；T6、T7、T8 可並行。
 
 ## T12 管理端對話處理器（Heavy 設計 → Careful 實作）— 依賴：T11
 
-- [ ] 狀態
+- [x] 狀態（2026-10-30 接受；真實模型 tool use 來回驗證通過，單次查詢約 25 秒）
 
 Heavy：設計 system prompt、工具 schema、回覆格式規範、多輪工具呼叫的終止條件與錯誤處理，產出精確的實作 brief。Careful：`src/handlers/admin.ts` 以 Anthropic SDK tool use 實作（先讀 claude-api skill 的 tool-use 文件）、白名單檢查、`admin_queries` 記錄、`report_issue` 接既有 Grok `incident_triage`。測試用 fake client 回放工具呼叫序列。
 
