@@ -35,6 +35,12 @@ export function createUsersRepo(db: Database) {
   const list = db.prepare(`
     SELECT u.*, (SELECT MAX(created_at) FROM messages m WHERE m.user_id = u.user_id) AS last_message_at
     FROM users u ORDER BY last_message_at DESC`);
+  const inHandoff = db.prepare(
+    'SELECT * FROM users WHERE handoff_until IS NOT NULL AND handoff_until > ? ORDER BY handoff_until',
+  );
+  const byPrefix = db.prepare(
+    "SELECT * FROM users WHERE user_id LIKE ? ESCAPE '\\' ORDER BY user_id LIMIT ?",
+  );
 
   return {
     /** Creates the user or marks an existing one followed again (keeps display_name if omitted). */
@@ -57,6 +63,15 @@ export function createUsersRepo(db: Database) {
     },
     resetLowConf(userId: string): void {
       resetLowConf.run(nowIso(), userId);
+    },
+    /** Users whose handoff has not expired at `at`. */
+    listInHandoff(at: Date): UserRow[] {
+      return inHandoff.all(nowIso(at)) as UserRow[];
+    },
+    /** Users whose id starts with `prefix` (LIKE wildcards escaped); at most `limit` rows. */
+    findByPrefix(prefix: string, limit = 5): UserRow[] {
+      const escaped = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+      return byPrefix.all(`${escaped}%`, limit) as UserRow[];
     },
     list(): UserListRow[] {
       return list.all() as UserListRow[];

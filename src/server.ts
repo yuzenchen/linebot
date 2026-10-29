@@ -9,6 +9,7 @@ import { closeDb, getDb } from './db/index.js';
 import { createRepos, type Repos } from './db/repos.js';
 import { createClassifierFromConfig } from './classifier/index.js';
 import { createDispatcher, defaultWelcomeText } from './handlers/dispatcher.js';
+import { createHandoffService } from './handlers/handoff.js';
 import { createTextMessageHandler } from './handlers/message.js';
 import { createGrokCallbackRoute, type GrokCallbackDeps } from './grok/callback.js';
 import { createGrokGateway } from './grok/gateway.js';
@@ -73,7 +74,16 @@ function main(): void {
     config,
     maxAttempts: JOB_MAX_ATTEMPTS,
   });
-  const handleText = createTextMessageHandler({ repos, replier, classifier, health, jobs, config });
+  const handoffService = createHandoffService({ repos, replier, config });
+  const handleText = createTextMessageHandler({
+    repos,
+    replier,
+    classifier,
+    health,
+    jobs,
+    config,
+    handoffService,
+  });
   const dispatch = createDispatcher({
     repos,
     replier,

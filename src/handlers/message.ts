@@ -5,11 +5,12 @@ import type { Config } from '../config.js';
 import type { Repos } from '../db/repos.js';
 import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
-import type { Replier } from '../line/replier.js';
+import { MAX_MESSAGES, type Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 import { texts } from '../texts.js';
 import type { TextMessageContext } from './dispatcher.js';
 import { createFeatureHandler } from './feature.js';
+import type { HandoffService } from './handoff.js';
 import { createIncidentHandler } from './incident.js';
 
 export interface HandoffHook {
@@ -29,6 +30,8 @@ export interface MessageDeps {
   >;
   /** T7: human handoff. When absent the check is skipped. */
   handoff?: HandoffHook;
+  /** T7: full handoff service (admin commands, keyword / low-confidence entry); its hook wins over `handoff`. */
+  handoffService?: HandoffService;
   now?: () => Date;
   log?: Logger;
 }
@@ -43,6 +46,8 @@ export function createTextMessageHandler(
   const log = deps.log ?? logger;
   const handleIncident = createIncidentHandler(deps);
   const handleFeatureRequest = createFeatureHandler(deps);
+  const handoffService = deps.handoffService;
+  const handoff = handoffService?.hook ?? deps.handoff;
 
   function buildContext(userId: string, messageId: number): ContextMessage[] {
     const rows = repos.messages.recent(userId, config.CONTEXT_MESSAGES + 1);
@@ -96,8 +101,20 @@ export function createTextMessageHandler(
     let replied = replyToken === undefined;
 
     try {
-      if (deps.handoff && (await deps.handoff.isActive(userId))) {
-        await deps.handoff.forward(ctx);
+      if (handoffService?.isAdmin(userId) && ctx.text.trimStart().startsWith('/')) {
+        await handoffService.handleAdminCommand(ctx);
+        return;
+      }
+
+      if (handoff && (await handoff.isActive(userId))) {
+        await handoff.forward(ctx);
+        return;
+      }
+
+      if (handoffService?.shouldEnterByKeyword(ctx.text)) {
+        const entered = await handoffService.enter(userId, '使用者要求真人');
+        replied = true;
+        await replier.replyOrPush(replyToken, userId, entered, 'handoff_entered');
         return;
       }
 
@@ -145,7 +162,11 @@ export function createTextMessageHandler(
       if (result.confidence < MIN_CONFIDENCE) repos.users.incrementLowConf(userId);
       else repos.users.resetLowConf(userId);
 
-      const msgs = await messagesFor(ctx, result, context);
+      let msgs = await messagesFor(ctx, result, context);
+      if (handoffService) {
+        const extra = await handoffService.afterClassification(userId);
+        if (extra.length > 0) msgs = [...msgs.slice(0, MAX_MESSAGES - extra.length), ...extra];
+      }
       if (!replied && replyToken !== undefined) {
         replied = true;
         await replier.reply(replyToken, userId, msgs);

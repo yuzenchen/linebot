@@ -24,7 +24,7 @@
 - `src/handlers/message.ts` — `createTextMessageHandler()`：SPEC 5.2 主流程（handoff hook、loading、脈絡、分類與 `REPLY_DEADLINE_MS` race、依類別分派、reply → 逾期 push、保底回覆、寫 classifications、低信心 streak）
 - `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
 - `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
-- `src/handlers/handoff.ts` — 人工轉接（T7 建立）
+- `src/handlers/handoff.ts` — `createHandoffService()`：SPEC 5.7 人工轉接（關鍵字 / 連續 2 則低信心 / `/handoff` 進入、24h 到期自動解除、期間轉發管理員）與管理員指令 `/status`、`/resume`、`/handoff`、`/help`
 - `src/classifier/types.ts` — 五類 `categories`、zod `classificationSchema`、`Classifier` / `ClassifyInput` / `ClassifyResult` 型別
 - `src/classifier/knowledge.ts` — `loadKnowledge()`：讀 `knowledge/*.md`（排除 welcome.md）依檔名串接、快取；`resetKnowledgeCache()`
 - `src/classifier/prompt.ts` — `buildSystemBlocks()`：固定規則 block + 知識庫 block（cache_control）；改分類規則來這裡
@@ -58,6 +58,7 @@
 - `test/grok/` — WebhookGrokGateway（fake fetch、HMAC）與 `/grok/callback` 路由測試
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
 - `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
+- `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員
 - `test/health/` — health checker 測試（fake fetch）
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）
 - `.dockerignore` — Docker build context 排除清單

@@ -54,7 +54,7 @@
 
 ## T7 人工轉接與管理員指令（Medium）— 依賴：T5
 
-- [ ] 狀態
+- [x] 狀態（2026-10-29 接受）
 
 `src/handlers/handoff.ts` 實作 SPEC 5.7：進入條件、24h 到期、期間轉發、`/resume`、`/handoff`、`/status`（今日訊息數、當月 push 數、pending jobs 數）。管理員指令僅接受 `ADMIN_LINE_USER_ID`；未設定時指令無效並 log。`message.ts` 在分類前接入 handoff 檢查。
 

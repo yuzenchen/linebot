@@ -15,7 +15,54 @@ export const texts = {
   incidentConfirmed: '已確認網站目前有異常，我們正在處理，恢復後會再通知你。造成不便很抱歉。',
   fallbackError: '系統忙碌中，請稍後再試，或留下你的問題，我們會盡快回覆。',
   grokUnavailable: '這個問題已轉交人工處理，專人會再回覆你，謝謝耐心等候。',
+  handoffEntered: '已為你轉接人工客服，請稍候，專人會在這裡回覆你。',
+  handoffResumed: '人工客服處理完成，之後的問題可以繼續問我。',
+  adminHelp:
+    '管理員指令：\n/status 今日訊息、本月 push、待處理 jobs、人工中人數\n/resume <userId前8碼> 解除人工轉接\n/handoff <userId前8碼> 轉為人工 24 小時',
 } as const;
+
+/** Admin push when a user enters human handoff (SPEC 5.7). */
+export function adminHandoffNotice(d: {
+  userId: string;
+  reason: string;
+  recentMessages: string[];
+}): string {
+  const userIdShort = d.userId.slice(0, 8);
+  const lines = d.recentMessages.map((t) => `- ${t}`).join('\n');
+  return `[轉人工] 使用者 ${userIdShort}（${d.reason}）\n最近訊息：\n${lines}\n解除：/resume ${userIdShort}`;
+}
+
+/** Admin push forwarding a user message during handoff. */
+export function adminForwardNotice(d: { userId: string; text: string }): string {
+  return `[人工中] ${d.userId.slice(0, 8)}：${d.text}`;
+}
+
+/** `/status` reply. */
+export function adminStatus(d: {
+  messagesToday: number;
+  pushesThisMonth: number;
+  pendingJobs: number;
+  inHandoff: number;
+}): string {
+  return `今日訊息 ${d.messagesToday} 則｜本月 push ${d.pushesThisMonth} 則｜待處理 jobs ${d.pendingJobs}｜人工中 ${d.inHandoff} 人`;
+}
+
+/** `/resume` success reply. */
+export function adminResumeDone(userId: string): string {
+  return `已解除 ${userId.slice(0, 8)} 的人工轉接`;
+}
+
+/** `/handoff` success reply. */
+export function adminHandoffDone(userId: string): string {
+  return `已將 ${userId.slice(0, 8)} 轉為人工客服（24 小時）`;
+}
+
+/** Reply when an id prefix matches zero or several users. */
+export function adminPrefixMismatch(prefix: string, count: number): string {
+  return count === 0
+    ? `找不到 id 開頭為 ${prefix} 的使用者，請確認後再試`
+    : `id 開頭為 ${prefix} 的使用者有 ${count >= 5 ? '5 位以上' : `${count} 位`}，請提供更長的 id 前綴`;
+}
 
 /** Admin push when a service question could not be answered by Grok (SPEC 5.6). */
 export function adminServiceQuestionNotice(d: { userId: string; text: string }): string {
