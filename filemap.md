@@ -64,7 +64,8 @@
 - `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（只負責派送：POST Cursor Automations webhook + `Authorization: Bearer`，body 含 `callback` 與 `instructions`，`buildDispatchBody()`）、`createGrokGateway(config)`；改派送 payload 或 instructions 來這裡
-- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed（push 使用者 / 管理員、寫 suggestions、service_question failed 開工單）、更新 `grok_tasks`；已關閉的 service_question 在 `GROK_FOLLOWUP_WINDOW_MS` 內再收到 done → 事後補充（push `grok_followup`、工單 `answered_by=grok`，SPEC-ADMIN §12.4）
+- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed / needs_human（push 使用者 / 管理員、寫 suggestions、service_question failed / needs_human / 轉人工文字的 done 開工單）、更新 `grok_tasks`；已關閉的 service_question 在 `GROK_FOLLOWUP_WINDOW_MS` 內再收到 done → 事後補充（push `grok_followup`、工單 `answered_by=grok`，SPEC-ADMIN §12.4）
+- `src/grok/deferral.ts` — `DEFERRAL_RE` / `looksLikeDeferral()`：判斷 done 文字是否其實是轉人工
 - `src/grok/sweeper.ts` — `startGrokTaskSweeper()`：每分鐘把逾時的 `grok_tasks` 標 `expired`，service_question push 使用者 `grokTimeout` + 開 `grok_timeout` 工單；同一輪也把 answered 工單超過 `TICKET_AUTO_CLOSE_MS` 自動 `closed`；`sweepOnce()` 供測試
 - `src/db/` — SQLite 連線、migrations、repositories
 - `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
@@ -94,7 +95,7 @@
 - `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo；`adminQueries.test.ts` 測 admin_queries repo
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
-- `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`sweeper.test.ts`（逾時處理）
+- `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`deferral.test.ts`（轉人工文字偵測）、`sweeper.test.ts`（逾時處理）
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
 - `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
 - `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員

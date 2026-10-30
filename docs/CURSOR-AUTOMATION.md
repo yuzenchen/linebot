@@ -23,12 +23,13 @@ linebot 會把需要後援的任務 POST 到你的 Cursor Automations webhook，
 對 `callback.url` 發 `POST`，header `x-linebot-token: <callback.token>`，body：
 
 ```json
-{ "taskId": "<收到的 id>", "status": "received | processing | done | failed", "text": "給人看的繁體中文", "structured": { "title": "...", "summary": "...", "category": "...", "mergedInto": null } }
+{ "taskId": "<收到的 id>", "status": "received | processing | done | failed | needs_human", "text": "給人看的繁體中文", "structured": { "title": "...", "summary": "...", "category": "...", "mergedInto": null } }
 ```
 
 - 收到任務先回 `received`（linebot 會告訴使用者「已送出處理中」）。
 - 處理中可以回 `processing`，`text` 可選。
 - 完成回 `done`：`service_question` 的 `text` 必填，就是要給使用者看的答案；`summarize_suggestion` 的 `structured` 必填。
+- `service_question` 查不到、需要人工介入、或只是把問題轉給別人 → 回 `needs_human`（不要用 `done`），`text` 寫要給客戶看的簡短說明；linebot 會推給客戶並開工單通知管理員。
 - 做不到回 `failed`，`text` 寫原因。
 - 15 分鐘內沒有 `done` 或 `failed`，linebot 會自己把任務標成逾時並改走人工。
 

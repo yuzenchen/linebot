@@ -103,6 +103,8 @@ describe('WebhookGrokGateway', () => {
     });
     expect(typeof body.sentAt).toBe('string');
     expect(GROK_INSTRUCTIONS).toContain('status=received');
+    expect(GROK_INSTRUCTIONS).toContain('status=needs_human');
+    expect(JSON.stringify(body.callback)).toContain('needs_human');
   });
 
   it('treats any 2xx as accepted, even with a non-JSON body', async () => {

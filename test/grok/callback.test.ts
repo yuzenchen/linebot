@@ -191,6 +191,61 @@ describe('POST /grok/callback: service_question', () => {
     expect(ticketRows(s)).toHaveLength(0);
   });
 
+  it('needs_human with text pushes it to the customer, opens a ticket, fails the task', async () => {
+    const s = setup();
+    const id = s.insert('service_question', question);
+    const res = await s.post({ taskId: id, status: 'needs_human', text: '這題我請專人幫你確認。' });
+    expect(res.status).toBe(200);
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([USER, ADMIN]);
+    expect(sentTexts(s.api)[0]).toEqual({ via: 'push', text: '這題我請專人幫你確認。' });
+    expect(pushReasons(s.db)).toEqual(['grok_needs_human', 'admin_ticket']);
+    expect(s.repos.grokTasks.get(id)).toMatchObject({
+      status: 'failed',
+      last_text: '這題我請專人幫你確認。',
+    });
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({
+        source: 'grok_failed',
+        grok_task_id: id,
+        question: question.text,
+        status: 'open',
+      }),
+    ]);
+  });
+
+  it('needs_human without text pushes grokUnavailable and opens a ticket', async () => {
+    const s = setup();
+    const id = s.insert('service_question', question);
+    await s.post({ taskId: id, status: 'needs_human' });
+    expect(sentTexts(s.api)[0]).toEqual({ via: 'push', text: texts.grokUnavailable });
+    expect(pushReasons(s.db)).toEqual(['grok_unavailable', 'admin_ticket']);
+    expect(s.repos.grokTasks.get(id)!.status).toBe('failed');
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({ source: 'grok_failed', grok_task_id: id }),
+    ]);
+  });
+
+  it('done whose text is a deferral pushes it and also opens a ticket; task stays done', async () => {
+    const s = setup();
+    const id = s.insert('service_question', question);
+    const res = await s.post({ taskId: id, status: 'done', text: '已轉給專人查詢，請稍候。' });
+    expect(await res.json()).toEqual({ ok: true });
+    expect(sentTexts(s.api)[0]).toEqual({ via: 'push', text: '已轉給專人查詢，請稍候。' });
+    expect(pushReasons(s.db)).toEqual(['grok_answer', 'admin_ticket']);
+    expect(s.repos.grokTasks.get(id)!.status).toBe('done');
+    expect(ticketRows(s)).toEqual([
+      expect.objectContaining({ source: 'grok_failed', grok_task_id: id, status: 'open' }),
+    ]);
+  });
+
+  it('done with a normal answer opens no ticket', async () => {
+    const s = setup();
+    const id = s.insert('service_question', question);
+    await s.post({ taskId: id, status: 'done', text: '訂單已出貨，預計明天到。' });
+    expect(pushReasons(s.db)).toEqual(['grok_answer']);
+    expect(ticketRows(s)).toHaveLength(0);
+  });
+
   it('still answers 200 when the LINE push fails', async () => {
     const s = setup();
     const id = s.insert('service_question', question);
@@ -221,6 +276,16 @@ describe('POST /grok/callback: incident_triage', () => {
     const id = s.insert('incident_triage', { userId: USER, incidentId: 3, text: '網站打不開' });
     await s.post({ taskId: id, status: 'failed', text: '無法連線' });
     expect(sentTexts(s.api)[0]!.text).toContain('分析失敗：無法連線');
+  });
+
+  it('needs_human behaves like failed', async () => {
+    const s = setup();
+    const id = s.insert('incident_triage', { userId: USER, incidentId: 3, text: '網站打不開' });
+    await s.post({ taskId: id, status: 'needs_human', text: '需要人工看主機' });
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([ADMIN]);
+    expect(sentTexts(s.api)[0]!.text).toContain('分析失敗：需要人工看主機');
+    expect(s.repos.grokTasks.get(id)!.status).toBe('failed');
+    expect(ticketRows(s)).toHaveLength(0);
   });
 });
 

@@ -190,6 +190,7 @@ Grok（Cursor）答不出、逾時或未設定時，客戶收到「改由人工�
 
 - `/grok/callback` 對已關閉（`done` / `failed` / `expired`）的 `service_question` 任務，在 **7 天內**再收到 `status=done` 且帶 `text` 時，不再回 `ignored`，改為：有對應 open 工單 → 視同專人回覆（`answered_by = grok`），push 客戶並關單；沒有工單 → 直接 push 客戶（reason `grok_followup`），同一任務最多 3 次。
 - `incident_triage` / `summarize_suggestion` 維持現狀。
+- `service_question` 回 `needs_human`（推 agent 的 `text` 或 `grokUnavailable`，任務記 `failed`），或回 `done` 但文字像轉人工（`src/grok/deferral.ts` 的 `DEFERRAL_RE`，任務仍記 `done`），都會開 `grok_failed` 工單並通知管理員。
 - `docs/CURSOR-AUTOMATION.md` 補充：任務結束後若人工補上答案，可再 POST 一次 `done`。
 
 ### 12.5 環境變數

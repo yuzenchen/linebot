@@ -11,6 +11,7 @@ import { logger } from '../logger.js';
 import { type AdminNotifier, createAdminNotifier } from '../notify/adminNotifier.js';
 import { adminServiceQuestionNotice, adminTriageNotice, texts } from '../texts.js';
 import type { TicketService } from '../tickets/service.js';
+import { looksLikeDeferral } from './deferral.js';
 import { CALLBACK_TOKEN_HEADER } from './gateway.js';
 
 export const DEFAULT_GROK_FOLLOWUP_WINDOW_MS = 604800000;
@@ -35,7 +36,7 @@ export interface GrokCallbackDeps {
 
 export const callbackBodySchema = z.object({
   taskId: z.string().min(1),
-  status: z.enum(['received', 'processing', 'done', 'failed']),
+  status: z.enum(['received', 'processing', 'done', 'failed', 'needs_human']),
   text: z.string().optional(),
   structured: z.unknown().optional(),
 });
@@ -49,6 +50,7 @@ const RANK: Record<string, number> = {
   processing: 2,
   done: 3,
   failed: 3,
+  needs_human: 3,
   expired: 3,
 };
 
@@ -78,7 +80,8 @@ function parsePayload(raw: string | null): Payload {
 
 /**
  * Sub-app with `POST /`; mount at `/grok/callback`. The Cursor agent POSTs here one or more times
- * per task (`received` → `processing` → `done` / `failed`) with `x-linebot-token`. LINE push
+ * per task (`received` → `processing` → `done` / `failed` / `needs_human`) with `x-linebot-token`.
+ * `needs_human` is service_question only; other task types treat it as `failed`. LINE push
  * failures are logged but still answered 200 so the agent does not retry because of LINE.
  */
 export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
@@ -124,28 +127,42 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
       }
       case 'done':
         await push(userId, custom as string, 'grok_answer', meta);
-        return;
-      case 'failed': {
-        const { text, context } = parsePayload(task.payload);
-        await push(userId, texts.grokUnavailable, 'grok_unavailable', meta);
-        if (deps.tickets) {
-          await deps.tickets.open({
-            userId,
-            source: 'grok_failed',
-            question: text ?? '',
-            context: Array.isArray(context) ? context : [],
-            grokTaskId: task.id,
-          });
-          return;
+        if (looksLikeDeferral(custom as string)) {
+          await escalate(task, userId, custom, meta);
+          log.info(meta, 'grok done text looks like a deferral; ticket opened');
         }
-        const notice = adminServiceQuestionNotice({ userId, text: text ?? '' });
-        await notifyAdmin(
-          'service_question',
-          custom ? `${notice}\n失敗原因：${custom}` : notice,
-          meta,
-        );
-      }
+        return;
+      case 'needs_human':
+        if (custom) await push(userId, custom, 'grok_needs_human', meta);
+        else await push(userId, texts.grokUnavailable, 'grok_unavailable', meta);
+        await escalate(task, userId, custom, meta);
+        return;
+      case 'failed':
+        await push(userId, texts.grokUnavailable, 'grok_unavailable', meta);
+        await escalate(task, userId, custom, meta);
     }
+  }
+
+  /** Hands the customer's original question to a human: a grok_failed ticket, else a notice. */
+  async function escalate(
+    task: GrokTaskRow,
+    userId: string,
+    custom: string | undefined,
+    meta: object,
+  ): Promise<void> {
+    const { text, context } = parsePayload(task.payload);
+    if (deps.tickets) {
+      await deps.tickets.open({
+        userId,
+        source: 'grok_failed',
+        question: text ?? '',
+        context: Array.isArray(context) ? context : [],
+        grokTaskId: task.id,
+      });
+      return;
+    }
+    const notice = adminServiceQuestionNotice({ userId, text: text ?? '' });
+    await notifyAdmin('service_question', custom ? `${notice}\n失敗原因：${custom}` : notice, meta);
   }
 
   /**
@@ -191,7 +208,7 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
         adminTriageNotice({ incidentId: id, text: custom as string }),
         meta,
       );
-    } else if (body.status === 'failed') {
+    } else if (body.status === 'failed' || body.status === 'needs_human') {
       await notifyAdmin(
         'triage',
         adminTriageNotice({ incidentId: id, text: `分析失敗：${custom || '未說明原因'}` }),
@@ -202,7 +219,7 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
 
   /** Returns a warning code when `structured` is unusable. */
   function applySummarize(task: GrokTaskRow, body: CallbackBody, meta: object): string | undefined {
-    if (body.status === 'failed') {
+    if (body.status === 'failed' || body.status === 'needs_human') {
       log.warn({ ...meta, reason: body.text }, 'grok summarize failed');
       return undefined;
     }
@@ -279,7 +296,8 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
       default:
         log.warn({ ...meta, type: task.type }, 'grok callback for unknown task type');
     }
-    repos.grokTasks.setStatus(body.taskId, body.status, body.text?.trim() || undefined);
+    const finalStatus = body.status === 'needs_human' ? 'failed' : body.status;
+    repos.grokTasks.setStatus(body.taskId, finalStatus, body.text?.trim() || undefined);
     return c.json(warning ? { ok: true, warning } : { ok: true });
   });
 
