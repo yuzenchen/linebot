@@ -181,8 +181,9 @@ export function createHandoffService(deps: HandoffDeps) {
         await replyAdmin(adminResumeDone(r.userId));
         await pushUser(r.userId, texts.handoffResumed, 'handoff_resumed');
       } else {
-        startHandoff(r.userId);
-        log.info({ userId: r.userId }, 'handoff entered by admin');
+        // Same path as a user-triggered handoff: sets the state AND opens a handoff ticket now,
+        // so the admin bot gets the [待回覆] notice without waiting for the customer's next message.
+        await enter(r.userId, '管理員手動轉接');
         await replyAdmin(adminHandoffDone(r.userId));
         await pushUser(r.userId, texts.handoffEntered, 'handoff_admin');
       }

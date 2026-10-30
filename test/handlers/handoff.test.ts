@@ -124,7 +124,7 @@ describe('handoff', () => {
     expect(ticketRows(h)[0].question).toBe('就是那個\n---\n還在嗎');
   });
 
-  it('forwarding without an open ticket (admin /handoff) opens a handoff ticket', async () => {
+  it('admin /handoff opens a handoff ticket immediately; later messages become follow-ups', async () => {
     const h = harness();
     const { handle } = make(
       h,
@@ -132,13 +132,19 @@ describe('handoff', () => {
     );
     h.repos.users.upsert({ userId: 'Uxyz98765432' });
     await handle(inbound(h.repos, '/handoff Uxyz', { userId: ADMIN }));
-    expect(ticketRows(h)).toHaveLength(0);
+    expect(ticketRows(h)).toEqual([
+      expect.objectContaining({
+        user_id: 'Uxyz98765432',
+        source: 'handoff',
+        question: '管理員手動轉接',
+        status: 'open',
+      }),
+    ]);
+    expect(pushReasons(h.db)).toEqual(['admin_ticket', 'handoff_admin']);
 
     await handle(inbound(h.repos, '在嗎', { userId: 'Uxyz98765432' }));
-    expect(ticketRows(h)).toEqual([
-      expect.objectContaining({ user_id: 'Uxyz98765432', source: 'handoff', question: '在嗎' }),
-    ]);
-    expect(pushReasons(h.db)).toEqual(['handoff_admin', 'admin_ticket']);
+    expect(ticketRows(h)).toHaveLength(1);
+    expect(pushReasons(h.db)).toEqual(['admin_ticket', 'handoff_admin', 'admin_ticket_followup']);
   });
 
   it('expired handoff is inactive and cleared', async () => {
@@ -219,7 +225,7 @@ describe('handoff', () => {
       new Date(T0.getTime() + HANDOFF_DURATION_MS).toISOString(),
     );
     expect(pushesTo(h, 'Uxyz98765432')).toEqual([texts.handoffEntered]);
-    expect(pushReasons(h.db)).toEqual(['handoff_admin']);
+    expect(pushReasons(h.db)).toEqual(['admin_ticket', 'handoff_admin']);
   });
 
   it('admin unknown command gets help; admin plain text is classified normally', async () => {
