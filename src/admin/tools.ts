@@ -23,6 +23,7 @@ import { healthRaw } from '../handlers/incident.js';
 import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
 import { logger } from '../logger.js';
+import { taipeiShort } from '../texts.js';
 import { EnduserClientError, type EnduserClient } from './enduserClient.js';
 
 /** ADMIN-HANDLER-DESIGN §3–§4: strict tool definitions and their read-only executors. */
@@ -34,6 +35,9 @@ const MAX_PRODUCT_ROWS = 50;
 const MAX_RELATED_ORDERS = 5;
 const MAX_GROK_TEXT = 4000;
 const MAX_ORDER_DETAIL = 800;
+const MAX_TICKETS = 10;
+const MAX_TICKET_PREVIEW = 120;
+const MAX_TICKET_QUESTION = 1500;
 
 /** Only an explicit ask in *this* message unlocks unmasked data (never the context). */
 export const PII_REQUEST = /電話|手機|地址|住址|e-?mail|信箱|聯絡方式|聯絡資料|完整/i;
@@ -75,6 +79,17 @@ export const replyCustomerInput = z.strictObject({
     .number()
     .describe('工單編號的數字部分，T042 就是 42；只能用管理員提供或工單通知裡出現的編號'),
   text: z.string().describe('要送給客戶的純文字內容，繁中，最多 1000 字'),
+});
+
+export const listTicketsInput = z.strictObject({
+  limit: z.number().nullable().describe('最多幾張，1 到 10；null 為 10'),
+});
+export const getTicketInput = z.strictObject({
+  ticket_id: z
+    .number()
+    .describe(
+      '工單編號的數字部分，T042 就是 42；只能用管理員提供、通知或 list_tickets 裡出現的編號',
+    ),
 });
 
 /** Max customer reply length (mirrors `/internal/reply`). */
@@ -136,6 +151,16 @@ export const ADMIN_TOOL_DEFS: readonly Anthropic.Beta.BetaTool[] = [
     '替管理員準備一則要送給工單客戶的回覆；不會直接送出，會先請管理員確認（回 Y 才送出）。管理員說「跟 T042 的客戶說…」「回覆 T042 …」時呼叫；工單編號必須來自管理員或工單通知，不要自己猜。',
     replyCustomerInput,
   ),
+  toolDef(
+    'list_tickets',
+    '查看待回覆的工單（客戶在等專人回覆的問題）。管理員問待回覆、有沒有客戶在等、誰還沒回、工單時呼叫。回傳 count 與最多 10 張：display 編號、userIdShort、question（前 120 字）、orderIds、createdAt（台北時間）、status。',
+    listTicketsInput,
+  ),
+  toolDef(
+    'get_ticket',
+    '查單張工單明細：完整問題、客戶最近對話、相關訂單、狀態與已回覆內容。管理員問某張工單（T042）細節時呼叫；編號不要自己猜。',
+    getTicketInput,
+  ),
 ];
 
 // ---- executor ------------------------------------------------------------------------------
@@ -168,7 +193,7 @@ export interface ToolExecutorDeps {
   jobs: Pick<JobQueue, 'enqueue'>;
   grok: Pick<GrokGateway, 'configured'>;
   /** T16: ticket reads go to the enduser bot. */
-  enduser: Pick<EnduserClient, 'getTicket'>;
+  enduser: Pick<EnduserClient, 'getTicket' | 'listOpenTickets'>;
   /** `CONFIRMATION_TTL_MS`. */
   confirmationTtlMs: number;
   userId: string;
@@ -430,6 +455,49 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
     return { staged: true, display: ticket.display, text };
   }
 
+  /** Known enduser-bot failures become `is_error` results carrying their `userMessage`. */
+  async function enduserCall<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof EnduserClientError) throw new ToolInputError(err.userMessage);
+      throw err;
+    }
+  }
+
+  async function listTickets(input: z.infer<typeof listTicketsInput>) {
+    const limit = clamp(Math.trunc(input.limit ?? MAX_TICKETS), 1, MAX_TICKETS);
+    const rows = await enduserCall(() => deps.enduser.listOpenTickets(limit));
+    const tickets = rows.slice(0, limit).map((t) => ({
+      display: t.display,
+      userIdShort: t.userIdShort,
+      question: truncate(t.question.replace(/\s+/g, ' ').trim(), MAX_TICKET_PREVIEW),
+      orderIds: t.orderIds,
+      createdAt: taipeiShort(t.createdAt),
+      status: t.status,
+    }));
+    return { tickets, count: tickets.length };
+  }
+
+  async function getTicket(input: z.infer<typeof getTicketInput>, rec: ToolCallRecord) {
+    const ticketId = Math.trunc(input.ticket_id);
+    if (!Number.isFinite(ticketId) || ticketId <= 0)
+      throw new ToolInputError('工單編號必須是正整數');
+    rec.ticketId = ticketId;
+    const t = await enduserCall(() => deps.enduser.getTicket(ticketId));
+    return {
+      display: t.display,
+      status: t.status,
+      userIdShort: t.userIdShort,
+      createdAt: taipeiShort(t.createdAt),
+      orderIds: t.orderIds,
+      question: truncate(t.question, MAX_TICKET_QUESTION),
+      context: t.context,
+      answer: t.answer,
+      answeredBy: t.answeredBy,
+    };
+  }
+
   async function execute(call: Anthropic.Beta.BetaToolUseBlock, rec: ToolCallRecord) {
     switch (call.name) {
       case 'list_orders':
@@ -451,6 +519,10 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
         return reportIssue(parse(reportIssueInput, call.input), rec);
       case 'reply_customer':
         return replyCustomer(parse(replyCustomerInput, call.input), rec);
+      case 'list_tickets':
+        return listTickets(parse(listTicketsInput, call.input));
+      case 'get_ticket':
+        return getTicket(parse(getTicketInput, call.input), rec);
       default:
         throw new ToolInputError(`未知工具 ${call.name}`);
     }

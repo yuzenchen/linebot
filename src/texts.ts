@@ -44,7 +44,7 @@ const TICKET_QUESTION_PREVIEW = 40;
 const TICKET_QUESTION_MAX = 1500;
 
 /** `2026-10-30T01:12:00.000Z` → `10-30 09:12` (Asia/Taipei, fixed UTC+8). */
-function taipeiShort(iso: string): string {
+export function taipeiShort(iso: string): string {
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return iso;
   const s = new Date(t.getTime() + 8 * 3600_000);

@@ -61,7 +61,12 @@ const DEADLINE = Symbol('deadline');
 /** SPEC-ADMIN §12.3 intercepts (checked before the model, in this order). */
 export const CONFIRM_RE = /^(y|yes|是|確認)$/i;
 export const REPLY_RE = /^回覆\s*T?(\d+)\s*[:：]?\s*([\s\S]+)$/i;
-export const LIST_RE = /^(待回覆|工單列表)$/;
+/**
+ * Ticket-list quick command: the whole (trimmed) message is at most 16 chars AND contains
+ * 待回覆 / 工單列表 / 工單清單 / 有工單 (「待回覆」「有待回覆的工單嗎」「目前有客戶待回覆訊息嗎？」).
+ * Longer sentences go to the model, which has the `list_tickets` tool.
+ */
+export const LIST_RE = /^(?=[\s\S]{1,16}$)[\s\S]*(待回覆|工單列表|工單清單|有工單)/;
 export const DETAIL_RE = /^工單\s*T?(\d+)$/i;
 export const CLOSE_RE = /^關閉\s*T?(\d+)$/i;
 

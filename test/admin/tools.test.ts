@@ -13,11 +13,14 @@ import type { GrokTask } from '../../src/grok/gateway.js';
 import { createJobHandlers } from '../../src/jobs/handlers.js';
 import { JobQueue } from '../../src/jobs/queue.js';
 import { fakeHealth, harness, healthResult, jobRows, silent } from '../handlers/helpers.js';
+import { EnduserClientError } from '../../src/admin/enduserClient.js';
 import {
   fakeEnduser,
   fakeEshop,
   LIST_ORDERS_INPUT,
   order,
+  ticketDetail,
+  ticketSummary,
   toolUse,
   type FakeEshop,
 } from './fakes.js';
@@ -53,6 +56,8 @@ describe('ADMIN_TOOL_DEFS', () => {
       'health',
       'report_issue',
       'reply_customer',
+      'list_tickets',
+      'get_ticket',
     ]);
     for (const t of ADMIN_TOOL_DEFS) expect(t.strict).toBe(true);
   });
@@ -464,5 +469,82 @@ describe('report_issue', () => {
     const payload = jobRows(s.db)[0].payload as { text: string };
     expect(payload.text).toContain('統計：查詢失敗：後台目前請求過多');
     expect(payload.text).toContain('#20261029-ABCDEF12：查詢失敗：');
+  });
+});
+
+describe('list_tickets / get_ticket', () => {
+  it('list_tickets caps at 10, previews 120 chars, Taipei time, short user id only', async () => {
+    const enduser = fakeEnduser();
+    const long = 'x'.repeat(200);
+    enduser.listOpenTickets.mockResolvedValue(
+      Array.from({ length: 12 }, (_, i) =>
+        ticketSummary({ id: i + 1, display: `T00${i + 1}`, question: i === 0 ? long : '問題' }),
+      ),
+    );
+    const s = setup({ enduser });
+    const [r] = await s.executor.runRound([toolUse('t', 'list_tickets', { limit: 50 })]);
+    expect(r.is_error).toBeUndefined();
+    expect(enduser.listOpenTickets).toHaveBeenCalledWith(10);
+    const body = parse(r) as { count: number; tickets: Record<string, unknown>[] };
+    expect(body.count).toBe(10);
+    expect(body.tickets).toHaveLength(10);
+    expect(body.tickets[0]).toEqual({
+      display: 'T001',
+      userIdShort: 'U6037873…',
+      question: 'x'.repeat(120),
+      orderIds: ['#20261029-VXJG7AZY'],
+      createdAt: '10-30 01:12',
+      status: 'open',
+    });
+    expect(s.executor.records[0]).toMatchObject({ name: 'list_tickets', ok: true });
+
+    const [r2] = await s.executor.runRound([toolUse('t2', 'list_tickets', { limit: null })]);
+    expect(r2.is_error).toBeUndefined();
+    expect(enduser.listOpenTickets).toHaveBeenLastCalledWith(10);
+  });
+
+  it('list_tickets enduser failure → is_error with its userMessage', async () => {
+    const enduser = fakeEnduser();
+    enduser.listOpenTickets.mockRejectedValue(new EnduserClientError('timeout', '客服端服務逾時'));
+    const s = setup({ enduser });
+    const [r] = await s.executor.runRound([toolUse('t', 'list_tickets', { limit: null })]);
+    expect(r.is_error).toBe(true);
+    expect(parse(r)).toEqual({ error: '客服端服務逾時' });
+    expect(s.executor.records[0]).toMatchObject({ name: 'list_tickets', ok: false });
+  });
+
+  it('get_ticket returns the detail with the full question capped at 1500', async () => {
+    const enduser = fakeEnduser();
+    enduser.getTicket.mockResolvedValue(
+      ticketDetail({ question: 'q'.repeat(2000), answer: '已出貨', answeredBy: 'Uadmin' }),
+    );
+    const s = setup({ enduser });
+    const [r] = await s.executor.runRound([toolUse('t', 'get_ticket', { ticket_id: 1 })]);
+    expect(r.is_error).toBeUndefined();
+    expect(enduser.getTicket).toHaveBeenCalledWith(1);
+    expect(parse(r)).toEqual({
+      display: 'T001',
+      status: 'open',
+      userIdShort: 'U6037873…',
+      createdAt: '10-30 01:12',
+      orderIds: ['#20261029-VXJG7AZY'],
+      question: 'q'.repeat(1500),
+      context: ['昨天訂的', '我的訂單什麼時候出貨'],
+      answer: '已出貨',
+      answeredBy: 'Uadmin',
+    });
+    expect(s.executor.records[0]).toMatchObject({ name: 'get_ticket', ticketId: 1, ok: true });
+  });
+
+  it('get_ticket unknown id / bad id → is_error', async () => {
+    const s = setup();
+    const [a, b] = await s.executor.runRound([
+      toolUse('a', 'get_ticket', { ticket_id: 42 }),
+      toolUse('b', 'get_ticket', { ticket_id: 0 }),
+    ]);
+    expect(a.is_error).toBe(true);
+    expect(parse(a)).toEqual({ error: '找不到這張工單' });
+    expect(b.is_error).toBe(true);
+    expect(s.executor.records[0]).toMatchObject({ name: 'get_ticket', ticketId: 42, ok: false });
   });
 });

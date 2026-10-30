@@ -432,3 +432,39 @@ describe('vi sanity', () => {
     expect(vi.isMockFunction(a.enduser.getTicket)).toBe(true);
   });
 });
+
+describe('loose 待回覆 quick command (≤16 chars)', () => {
+  it.each([
+    '目前有客戶待回覆訊息嗎？',
+    '待回覆工單',
+    '有待回覆的工單嗎',
+    '工單清單',
+    '現在有工單嗎',
+  ])('%s hits the intercept without the model', async (msg) => {
+    const s = setup();
+    await s.send(msg);
+    expect(s.model.calls).toHaveLength(0);
+    expect(s.enduser.listOpenTickets).toHaveBeenCalledWith(10);
+    expect(s.last()).toEqual({ via: 'reply', text: adminTicketList([ticketSummary()]) });
+  });
+
+  it('a longer sentence with 待回覆 goes to the model, which uses list_tickets', async () => {
+    const msg = '麻煩幫我看一下今天下午到現在為止還有哪些客戶的待回覆訊息沒處理好';
+    expect(msg.length).toBeGreaterThan(16);
+    const s = setup([
+      toolTurn(toolUse('tu1', 'list_tickets', { limit: null })),
+      endTurn('目前 1 張待回覆：T001｜10-30 01:12｜我的訂單什麼時候出貨'),
+    ]);
+    await s.send(msg);
+    expect(s.model.calls).toHaveLength(2);
+    const result = s.model.calls[1].params.messages.at(-1)?.content as { content: string }[];
+    expect(JSON.parse(result[0].content)).toMatchObject({
+      count: 1,
+      tickets: [expect.objectContaining({ display: 'T001' })],
+    });
+    expect(s.last()?.text).toContain('T001');
+    expect(JSON.parse(s.queries()[0].tools)).toEqual([
+      expect.objectContaining({ name: 'list_tickets', ok: true }),
+    ]);
+  });
+});
