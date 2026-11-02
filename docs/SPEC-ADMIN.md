@@ -238,11 +238,11 @@ Grok（Cursor）答不出、逾時或未設定時，客戶收到「改由人工�
 
 ### 13.4 Grok 任務 `bug_report`
 
-- 新任務類型 `bug_report`，payload：`{ id, type: 'bug_report', userMessage: 描述, context: [], health, reportedAt }`。
-- instructions：「網站功能 bug 回報：交給 Claude Code session 調查。收到先回 received；有進度可回 processing 附說明；查明原因或修好回 done 附結果說明（給管理員看，可含技術細節）；無法處理回 failed 附原因。」
-- callback：每個狀態都私訊給 `reporter`（不是群組），文字 `[Bug B001] 已收到 / 處理中：… / 完成：… / 失敗：…`；同一狀態重複不重推。`needs_human` 對 bug_report 視同 failed。
+- 新任務類型 `bug_report`，payload：`{ id, type: 'bug_report', ref: 'B001', userMessage: 描述, context: [], health, reportedAt }`。
+- instructions：「網站功能 bug 回報（ref 為 linebot 的編號，例如 B001，回報與溝通時請帶上）：交給 Claude Code session 調查。收到先回 received；有進度隨時回 processing 附說明；查明原因或修好回 done 附結果說明（給管理員看，可含技術細節）；無法處理回 failed 附原因。任務結束後 30 天內仍可對同一 taskId 再回 processing 或 done 補充後續進度（例如修正已部署）。」
+- callback：每個狀態都私訊給 `reporter`（不是群組），文字 `[Bug B001] 已收到：… / 處理中：… / 完成：… / 失敗：…`（沒附文字時省略冒號後段）；狀態與文字都相同才不重推。`needs_human` 對 bug_report 視同 failed。
 - 逾時：`bug_report` 用 `GROK_BUG_TIMEOUT_MS`（預設 24 小時），逾時私訊回報人「B001 Grok 未在時限內回報」。
-- 事後補充（§12.4 的 7 天 done）不適用 bug_report。
+- 事後補充：§12.4 的 7 天 done 不適用 bug_report；bug_report 改用 `GROK_BUG_FOLLOWUP_WINDOW_MS`（預設 30 天，從任務建立起算），任務結束（done / failed / expired）後仍接受 processing / done / failed / needs_human，更新 `bug_reports` 並私訊回報人，任務狀態不變，同一任務最多 20 次 callback；結束後的 received 忽略。去重改看文字：狀態與 trim 後文字都和 `bug_reports` 上次相同才不重推（進行中與結束後皆同）。payload 帶 `ref`（B 編號，例如 `B001`）。
 
 ### 13.5 設定
 

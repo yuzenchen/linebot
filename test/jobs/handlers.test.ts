@@ -334,6 +334,7 @@ describe('job handler: bug_report (SPEC-ADMIN §13.4)', () => {
       context: [],
       health: payload.health,
       reportedAt: T0.toISOString(),
+      ref: 'B001',
     });
     expect(s.repos.bugReports.get(bugId)).toMatchObject({ status: 'sent', grok_task_id: row.id });
     expect(s.api.pushMessage).not.toHaveBeenCalled();

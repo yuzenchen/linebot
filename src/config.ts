@@ -104,6 +104,8 @@ export const configSchema = z.object({
   ),
   /** How long a `bug_report` Grok task may wait before it expires (§13.4; default 24 h). */
   GROK_BUG_TIMEOUT_MS: intWithDefault(86400000),
+  /** How long after a `bug_report` task was created follow-up callbacks are still DMed (§13.4; default 30 d). */
+  GROK_BUG_FOLLOWUP_WINDOW_MS: intWithDefault(2592000000),
 });
 
 /**

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resetClock, setClock } from '../../src/db/time.js';
 import type { GrokTaskType } from '../../src/grok/gateway.js';
 import { createApp } from '../../src/server.js';
 import {
@@ -14,7 +15,9 @@ const TOKEN = 'cb-test';
 const ADMIN = 'Uadmin000000';
 const USER = 'Uuser1234567';
 
-function setup(opts: { token?: string | undefined; admin?: string; tickets?: boolean } = {}) {
+function setup(
+  opts: { token?: string | undefined; admin?: string; tickets?: boolean; now?: () => Date } = {},
+) {
   const h = harness();
   const token = 'token' in opts ? opts.token : TOKEN;
   const admin = opts.admin ?? ADMIN;
@@ -28,6 +31,7 @@ function setup(opts: { token?: string | undefined; admin?: string; tickets?: boo
       replier: h.replier,
       config: { ADMIN_LINE_USER_ID: admin },
       tickets: opts.tickets === false ? undefined : ticketService(h, admin),
+      now: opts.now,
       log: silent,
     },
   });
@@ -393,20 +397,19 @@ describe('POST /grok/callback: bug_report (SPEC-ADMIN §13.4)', () => {
     expect(ticketRows(s)).toHaveLength(0);
   });
 
-  it('the same status twice is pushed once; a late done after close is not a follow-up', async () => {
+  it('same status is pushed again only when the text is new', async () => {
     const s = setup();
     const { id } = seed(s);
     await s.post({ taskId: id, status: 'received' });
     await s.post({ taskId: id, status: 'received' });
+    await s.post({ taskId: id, status: 'processing', text: '已找到原因' });
+    await s.post({ taskId: id, status: 'processing', text: ' 已找到原因 ' });
+    await s.post({ taskId: id, status: 'processing', text: '正在修' });
     await s.post({ taskId: id, status: 'processing' });
-    await s.post({ taskId: id, status: 'processing', text: '還在查' });
-    await s.post({ taskId: id, status: 'done', text: '好了' });
-    const late = await s.post({ taskId: id, status: 'done', text: '補充' });
-    expect(await late.json()).toEqual({ ok: true, ignored: true });
     expect(sentTexts(s.api).map((t) => t.text)).toEqual([
       notice('received'),
-      notice('processing'),
-      notice('done', '好了'),
+      notice('processing', '已找到原因'),
+      notice('processing', '正在修'),
     ]);
   });
 
@@ -421,6 +424,103 @@ describe('POST /grok/callback: bug_report (SPEC-ADMIN §13.4)', () => {
     expect(s.repos.grokTasks.get(id)!.status).toBe('failed');
     expect(sentTexts(s.api)).toEqual([{ via: 'push', text: notice('failed', '需要後端權限') }]);
     expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([REPORTER]);
+  });
+
+  describe('follow-up after the task closed (30-day window from creation)', () => {
+    const T0 = new Date('2026-10-01T00:00:00.000Z');
+    const DAY_MS = 86_400_000;
+    afterEach(resetClock);
+
+    function closedSetup() {
+      setClock(() => T0);
+      let current = T0;
+      const s = setup({ now: () => current });
+      const ids = seed(s);
+      const at = (days: number) => {
+        const d = new Date(T0.getTime() + days * DAY_MS);
+        current = d;
+        setClock(() => d);
+      };
+      return { s, ...ids, at };
+    }
+
+    it('a second done with new text is DMed; the task stays done', async () => {
+      const { s, id, bugId, at } = closedSetup();
+      await s.post({ taskId: id, status: 'done', text: '已找到原因' });
+      at(3);
+      const res = await s.post({ taskId: id, status: 'done', text: '已部署修正' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, followup: true });
+      expect(s.repos.grokTasks.get(id)).toMatchObject({
+        status: 'done',
+        last_text: '已部署修正',
+        callbacks: 2,
+      });
+      expect(s.repos.bugReports.get(bugId)).toMatchObject({
+        status: 'done',
+        last_text: '已部署修正',
+      });
+      expect(sentTexts(s.api).map((t) => t.text)).toEqual([
+        notice('done', '已找到原因'),
+        notice('done', '已部署修正'),
+      ]);
+      expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([REPORTER, REPORTER]);
+      // Same status and same text again: accepted as a follow-up but not pushed.
+      await s.post({ taskId: id, status: 'done', text: '已部署修正' });
+      expect(s.api.pushMessage).toHaveBeenCalledTimes(2);
+      // done without text on a closed task is still rejected.
+      expect((await s.post({ taskId: id, status: 'done' })).status).toBe(400);
+    });
+
+    it('a follow-up after the task expired is DMed', async () => {
+      const { s, id, bugId, at } = closedSetup();
+      s.repos.grokTasks.setStatus(id, 'expired');
+      s.repos.bugReports.setStatus(bugId, 'expired');
+      at(2);
+      const res = await s.post({ taskId: id, status: 'processing', text: '已找到原因' });
+      expect(await res.json()).toEqual({ ok: true, followup: true });
+      expect(s.repos.grokTasks.get(id)!.status).toBe('expired');
+      expect(s.repos.bugReports.get(bugId)!.status).toBe('processing');
+      expect(sentTexts(s.api).map((t) => t.text)).toEqual([notice('processing', '已找到原因')]);
+    });
+
+    it('is ignored after 31 days, and received on a closed task is ignored', async () => {
+      const { s, id, at } = closedSetup();
+      await s.post({ taskId: id, status: 'done', text: '好了' });
+      at(1);
+      const received = await s.post({ taskId: id, status: 'received', text: '再看一次' });
+      expect(await received.json()).toEqual({ ok: true, ignored: true });
+      at(31);
+      const late = await s.post({ taskId: id, status: 'done', text: '補充' });
+      expect(await late.json()).toEqual({ ok: true, ignored: true });
+      expect(sentTexts(s.api).map((t) => t.text)).toEqual([notice('done', '好了')]);
+    });
+
+    it('the 21st callback is ignored', async () => {
+      const { s, id } = closedSetup();
+      for (let i = 1; i <= 20; i++) {
+        const status = i === 20 ? 'done' : 'processing';
+        const res = await s.post({ taskId: id, status, text: '進度 ' + i });
+        expect(res.status).toBe(200);
+      }
+      expect(s.repos.grokTasks.get(id)!.callbacks).toBe(20);
+      expect(s.api.pushMessage).toHaveBeenCalledTimes(20);
+      const res = await s.post({ taskId: id, status: 'done', text: '進度 21' });
+      expect(await res.json()).toEqual({ ok: true, ignored: true });
+      expect(s.api.pushMessage).toHaveBeenCalledTimes(20);
+    });
+
+    it('a closed service_question keeps its own 7-day rule', async () => {
+      const { s, at } = closedSetup();
+      const id = s.insert('service_question', question);
+      await s.post({ taskId: id, status: 'done', text: '已出貨' });
+      at(8);
+      const late = await s.post({ taskId: id, status: 'done', text: '補充' });
+      expect(await late.json()).toEqual({ ok: true, ignored: true });
+      const processing = await s.post({ taskId: id, status: 'processing', text: 'x' });
+      expect(await processing.json()).toEqual({ ok: true, ignored: true });
+      expect(pushReasons(s.db)).toEqual(['grok_answer']);
+    });
   });
 
   it('failed without text says the reason is unknown', async () => {

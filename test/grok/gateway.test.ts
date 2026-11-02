@@ -107,6 +107,19 @@ describe('WebhookGrokGateway', () => {
     expect(JSON.stringify(body.callback)).toContain('needs_human');
   });
 
+  it('bug_report body carries ref; other bodies have no ref key', async () => {
+    const fetchImpl = ok();
+    await gateway(fetchImpl).run({ ...task, id: 'task-bug', type: 'bug_report', ref: 'B001' });
+    await gateway(fetchImpl).run(task);
+    const bugBody = fetchImpl.mock.calls[0]![1]?.body as string;
+    const sqBody = fetchImpl.mock.calls[1]![1]?.body as string;
+    expect(bugBody).toContain('"ref":"B001"');
+    expect(Object.keys(JSON.parse(sqBody) as object)).not.toContain('ref');
+    expect(GROK_INSTRUCTIONS).toContain(
+      '網站功能 bug 回報（ref 為 linebot 的編號，例如 B001，回報與溝通時請帶上）：交給 Claude Code session 調查。收到先回 received；有進度隨時回 processing 附說明；查明原因或修好回 done 附結果說明（給管理員看，可含技術細節）；無法處理回 failed 附原因。任務結束後 30 天內仍可對同一 taskId 再回 processing 或 done 補充後續進度（例如修正已部署）。',
+    );
+  });
+
   it('treats any 2xx as accepted, even with a non-JSON body', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response('queued', { status: 202 }));
     expect(await gateway(fetchImpl).run(task)).toEqual({ ok: true, accepted: true });

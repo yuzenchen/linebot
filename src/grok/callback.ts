@@ -18,6 +18,9 @@ import { CALLBACK_TOKEN_HEADER } from './gateway.js';
 export const DEFAULT_GROK_FOLLOWUP_WINDOW_MS = 604800000;
 /** A closed service_question task accepts late `done` callbacks while `callbacks <=` this. */
 export const MAX_FOLLOWUP_CALLBACKS = 5;
+export const DEFAULT_GROK_BUG_FOLLOWUP_WINDOW_MS = 2592000000;
+/** A bug_report task accepts at most this many callbacks in total (active + follow-up). */
+export const MAX_BUG_CALLBACKS = 20;
 
 export interface GrokCallbackDeps {
   /** `GROK_CALLBACK_TOKEN`; without it the route answers 503. */
@@ -26,7 +29,15 @@ export interface GrokCallbackDeps {
   repos: Pick<Repos, 'grokTasks' | 'suggestions'> & Partial<Pick<Repos, 'tickets' | 'bugReports'>>;
   replier: Pick<Replier, 'push'>;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
-    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN' | 'GROK_FOLLOWUP_WINDOW_MS'>>;
+    Partial<
+      Pick<
+        Config,
+        | 'ADMIN_NOTIFY_URL'
+        | 'INTERNAL_NOTIFY_TOKEN'
+        | 'GROK_FOLLOWUP_WINDOW_MS'
+        | 'GROK_BUG_FOLLOWUP_WINDOW_MS'
+      >
+    >;
   /** Defaults to one built from `config` + `replier`. */
   adminNotifier?: AdminNotifier;
   /** T15: when present, a failed service_question opens a ticket instead of a plain notice. */
@@ -96,6 +107,8 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
     deps.adminNotifier ?? createAdminNotifier({ config: deps.config, replier, log: deps.log });
   const now = deps.now ?? (() => new Date());
   const followUpWindowMs = deps.config.GROK_FOLLOWUP_WINDOW_MS ?? DEFAULT_GROK_FOLLOWUP_WINDOW_MS;
+  const bugFollowUpWindowMs =
+    deps.config.GROK_BUG_FOLLOWUP_WINDOW_MS ?? DEFAULT_GROK_BUG_FOLLOWUP_WINDOW_MS;
   const app = new Hono();
 
   async function push(userId: string, text: string, reason: string, meta: object): Promise<void> {
@@ -224,7 +237,8 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
 
   /**
    * SPEC-ADMIN §13.4: every status is DMed to the reporter (never the group or other admins);
-   * a repeated status is not pushed again; `needs_human` counts as `failed`.
+   * a callback is skipped only when its status matches the bug's stored status and it brings no
+   * new text (missing, or equal to the stored `last_text`); `needs_human` counts as `failed`.
    */
   async function applyBugReport(task: GrokTaskRow, body: CallbackBody, meta: object) {
     const { bugId, reporterUserId } = parsePayload(task.payload);
@@ -235,8 +249,11 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
     }
     const status = body.status === 'needs_human' ? 'failed' : body.status;
     const text = body.text?.trim() || undefined;
-    if (task.status === status) {
-      log.info({ ...meta, bugId }, 'bug_report same status again; not pushed');
+    const bug = repos.bugReports?.get(bugId);
+    const lastStatus = bug ? bug.status : task.status;
+    const lastText = (bug ? bug.last_text : task.last_text)?.trim() || undefined;
+    if (lastStatus === status && (text === undefined || text === lastText)) {
+      log.info({ ...meta, bugId }, 'bug_report same status and text again; not pushed');
       return;
     }
     repos.bugReports?.setStatus(bugId, status, text);
@@ -245,6 +262,31 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
       ...meta,
       bugId,
     });
+  }
+
+  /**
+   * SPEC-ADMIN §13.4: a closed bug_report task (done / failed / expired) still accepts
+   * `processing` / `done` / `failed` / `needs_human` within the window measured from task
+   * creation, up to `MAX_BUG_CALLBACKS` callbacks in total. The task keeps its terminal status.
+   */
+  async function applyBugFollowUp(
+    task: GrokTaskRow,
+    body: CallbackBody,
+    meta: object,
+  ): Promise<'followup' | 'text_required' | undefined> {
+    if (task.type !== 'bug_report' || body.status === 'received') return undefined;
+    const age = now().getTime() - new Date(task.created_at).getTime();
+    if (age > bugFollowUpWindowMs) return undefined;
+    if (task.callbacks >= MAX_BUG_CALLBACKS) {
+      log.warn({ ...meta, callbacks: task.callbacks }, 'bug_report callback cap reached; ignored');
+      return undefined;
+    }
+    const text = body.text?.trim() || undefined;
+    if (body.status === 'done' && !text) return 'text_required';
+    await applyBugReport(task, body, meta);
+    repos.grokTasks.recordFollowUp(task.id, text);
+    log.info({ ...meta, taskStatus: task.status }, 'bug_report follow-up');
+    return 'followup';
   }
 
   /** Returns a warning code when `structured` is unusable. */
@@ -296,10 +338,19 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
       return c.json({ error: 'unknown task' }, 404);
     }
     if (TERMINAL.has(task.status)) {
+      const bugLate = await applyBugFollowUp(task, body, meta);
+      if (bugLate === 'followup') return c.json({ ok: true, followup: true });
+      if (bugLate === 'text_required') {
+        return c.json({ error: 'text required for status done' }, 400);
+      }
       const late = await applyLateFollowUp(task, body, meta);
       if (late === 'followup') return c.json({ ok: true, followup: true });
       if (late === 'push_failed') return c.json({ ok: true, followup: true, warning: late });
       log.info({ ...meta, taskStatus: task.status }, 'grok callback ignored (task closed)');
+      return c.json({ ok: true, ignored: true });
+    }
+    if (task.type === 'bug_report' && task.callbacks >= MAX_BUG_CALLBACKS) {
+      log.warn({ ...meta, callbacks: task.callbacks }, 'bug_report callback cap reached; ignored');
       return c.json({ ok: true, ignored: true });
     }
     if ((RANK[body.status] ?? 0) < (RANK[task.status] ?? 0)) {

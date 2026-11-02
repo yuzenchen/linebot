@@ -265,6 +265,7 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
           context: [],
           health: p.health as HealthResult,
           reportedAt,
+          ref: display,
         },
         {
           expiresInMs: bugTimeoutMs,

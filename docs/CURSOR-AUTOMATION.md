@@ -15,6 +15,7 @@ linebot 會把需要後援的任務 POST 到你的 Cursor Automations webhook，
 | `context` | 最近幾則對話 `[{role, text}]` |
 | `health` | 只有 incident_triage 有：linebot 打 pet eshop `/health` 的結果 |
 | `existingSuggestions` | 只有 summarize_suggestion 有：既有建議的 `{id, title}` 清單，用來判斷要不要合併 |
+| `ref` | 只有 bug_report 有：linebot 的 B 編號（例如 `B001`），回報與溝通時請帶上 |
 | `callback` | 回報用的網址、header 名稱、token、body 格式 |
 | `instructions` | 繁中說明：要做什麼、何時回報、回答格式 |
 
@@ -36,6 +37,8 @@ linebot 會把需要後援的任務 POST 到你的 Cursor Automations webhook，
 ## 2a. 事後補充答案
 
 任務已回 `done` 或 `failed` 之後，若人工（例如在 Cursor 對話裡）查到答案，agent 可以在 **7 天內**再 POST 一次 `status=done` 並附 `text`，linebot 會把它當成專人回覆推給該客戶（同一任務最多 5 次）。`incident_triage` 與 `summarize_suggestion` 不適用。
+
+- `bug_report`：任務建立後 **30 天內**（同一任務最多 20 次 callback），結束後仍可對同一 `taskId` 再回 `processing` / `done`（例如「已部署修正」）；每次新的 `text` 都會私訊給回報人，狀態與文字都和上次相同才不重推。
 
 ## 3. automation prompt 建議寫法
 
