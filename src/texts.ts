@@ -42,6 +42,8 @@ export const texts = {
   adminTicketListEmpty: '目前沒有待回覆的工單。',
   groupBugHelp: '請在 tag 後直接描述網站問題，例如：@bot 結帳頁按 LINE Pay 沒反應',
   bugDispatchFailed: 'Grok 送出失敗',
+  /** Group reply when the bug handler itself fails (internal group, not customer-facing). */
+  groupBugError: '回報失敗，請稍後再 tag 一次。',
   /** SPEC-ADMIN §13.3: group confirmation once a bug report is queued for Grok. */
   groupBugAccepted: (display: string): string =>
     `已轉給 Grok 處理（${display}），進度會私訊給回報人。`,
@@ -53,11 +55,11 @@ export const texts = {
     const text = d.text?.trim();
     switch (d.status) {
       case 'received':
-        return `${head} 已收到`;
+        return text ? `${head} 已收到：${text}` : `${head} 已收到`;
       case 'processing':
         return text ? `${head} 處理中：${text}` : `${head} 處理中`;
       case 'done':
-        return `${head} 完成：${text ?? ''}`;
+        return text ? `${head} 完成：${text}` : `${head} 完成`;
       case 'failed':
         return `${head} 失敗：${text || '未說明原因'}`;
     }

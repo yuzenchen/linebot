@@ -381,6 +381,10 @@ describe('POST /grok/callback: bug_report (SPEC-ADMIN §13.4)', () => {
     ]);
     expect(notice('received')).toBe('[Bug B001] 已收到');
     expect(notice('done', '已修好')).toBe('[Bug B001] 完成：已修好');
+    expect(notice('received', '等待確認後交給程式碼 session')).toBe(
+      '[Bug B001] 已收到：等待確認後交給程式碼 session',
+    );
+    expect(notice('done')).toBe('[Bug B001] 完成');
     const targets = s.api.pushMessage.mock.calls.map(([r]) => r.to);
     expect(targets).toEqual([REPORTER, REPORTER, REPORTER]);
     expect(targets).not.toContain(GROUP);

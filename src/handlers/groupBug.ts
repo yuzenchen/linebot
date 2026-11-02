@@ -128,7 +128,7 @@ export function createGroupBugHandler(deps: GroupBugHandlerDeps) {
     } catch (err) {
       log.error({ ...meta, err }, 'group bug handler failed');
       try {
-        await reply(texts.fallbackError, 'group_bug_error');
+        await reply(texts.groupBugError, 'group_bug_error');
       } catch (replyErr) {
         log.error({ ...meta, err: replyErr }, 'group bug fallback reply failed');
       }

@@ -208,3 +208,14 @@ describe('group bug handler', () => {
     expect(s.bugRows()).toHaveLength(1);
   });
 });
+
+describe('group bug handler failure', () => {
+  it('replies the internal-group error text, not the customer fallback', async () => {
+    const s = setup();
+    s.health.check.mockRejectedValueOnce(new Error('boom'));
+    await s.handle(s.ctx('@小幫手 結帳頁壞了', [self(0, 4)]));
+    expect(sentTexts(s.api)).toEqual([{ via: 'reply', text: texts.groupBugError }]);
+    expect(texts.groupBugError).toBe('回報失敗，請稍後再 tag 一次。');
+    expect(s.bugRows()).toHaveLength(0);
+  });
+});
