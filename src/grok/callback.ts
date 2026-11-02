@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { displayBugId } from '../bugs/ids.js';
 import type { Config } from '../config.js';
 import type { GrokTaskRow } from '../db/grokTasks.js';
 import type { Repos } from '../db/repos.js';
@@ -22,7 +23,7 @@ export interface GrokCallbackDeps {
   /** `GROK_CALLBACK_TOKEN`; without it the route answers 503. */
   token?: string;
   /** With `tickets`, a late `done` (§12.4) answers the customer's open / answered ticket. */
-  repos: Pick<Repos, 'grokTasks' | 'suggestions'> & Partial<Pick<Repos, 'tickets'>>;
+  repos: Pick<Repos, 'grokTasks' | 'suggestions'> & Partial<Pick<Repos, 'tickets' | 'bugReports'>>;
   replier: Pick<Replier, 'push'>;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
     Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN' | 'GROK_FOLLOWUP_WINDOW_MS'>>;
@@ -66,6 +67,9 @@ interface Payload {
   context?: { role: 'user' | 'assistant'; text: string }[];
   incidentId?: number;
   suggestionId?: number;
+  /** bug_report only. */
+  bugId?: number;
+  reporterUserId?: string;
 }
 
 function parsePayload(raw: string | null): Payload {
@@ -81,7 +85,8 @@ function parsePayload(raw: string | null): Payload {
 /**
  * Sub-app with `POST /`; mount at `/grok/callback`. The Cursor agent POSTs here one or more times
  * per task (`received` → `processing` → `done` / `failed` / `needs_human`) with `x-linebot-token`.
- * `needs_human` is service_question only; other task types treat it as `failed`. LINE push
+ * `needs_human` is service_question only; other task types treat it as `failed`. bug_report
+ * progress is DMed to the reporter only (SPEC-ADMIN §13.4). LINE push
  * failures are logged but still answered 200 so the agent does not retry because of LINE.
  */
 export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
@@ -217,6 +222,31 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
     }
   }
 
+  /**
+   * SPEC-ADMIN §13.4: every status is DMed to the reporter (never the group or other admins);
+   * a repeated status is not pushed again; `needs_human` counts as `failed`.
+   */
+  async function applyBugReport(task: GrokTaskRow, body: CallbackBody, meta: object) {
+    const { bugId, reporterUserId } = parsePayload(task.payload);
+    const reporter = reporterUserId ?? task.user_id;
+    if (bugId === undefined || !reporter) {
+      log.warn(meta, 'bug_report task without bugId / reporter');
+      return;
+    }
+    const status = body.status === 'needs_human' ? 'failed' : body.status;
+    const text = body.text?.trim() || undefined;
+    if (task.status === status) {
+      log.info({ ...meta, bugId }, 'bug_report same status again; not pushed');
+      return;
+    }
+    repos.bugReports?.setStatus(bugId, status, text);
+    const display = displayBugId(bugId);
+    await push(reporter, texts.bugStatusNotice({ display, status, text }), 'bug_status', {
+      ...meta,
+      bugId,
+    });
+  }
+
   /** Returns a warning code when `structured` is unusable. */
   function applySummarize(task: GrokTaskRow, body: CallbackBody, meta: object): string | undefined {
     if (body.status === 'failed' || body.status === 'needs_human') {
@@ -292,6 +322,9 @@ export function createGrokCallbackRoute(deps: GrokCallbackDeps): Hono {
         break;
       case 'summarize_suggestion':
         warning = applySummarize(task, body, meta);
+        break;
+      case 'bug_report':
+        await applyBugReport(task, body, meta);
         break;
       default:
         log.warn({ ...meta, type: task.type }, 'grok callback for unknown task type');

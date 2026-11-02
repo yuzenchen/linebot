@@ -156,10 +156,28 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
 );
 `;
 
+/** SPEC-ADMIN §13: website bugs reported by tagging the admin bot in a group. */
+const bugReports = `
+CREATE TABLE IF NOT EXISTS bug_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reporter_user_id TEXT,
+  group_id TEXT,
+  description TEXT,
+  health_raw TEXT,
+  grok_task_id TEXT,
+  status TEXT CHECK (status IN ('queued', 'sent', 'received', 'processing', 'done', 'failed', 'expired')) DEFAULT 'queued',
+  last_text TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created ON bug_reports (reporter_user_id, created_at);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
   { version: 3, name: '003_admin_queries', sql: adminQueries },
   { version: 4, name: '004_tickets', sql: tickets },
   { version: 5, name: '005_pending_confirmations', sql: pendingConfirmations },
+  { version: 6, name: '006_bug_reports', sql: bugReports },
 ];

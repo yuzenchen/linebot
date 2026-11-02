@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { displayBugId } from '../bugs/ids.js';
 import type { Config } from '../config.js';
 import type { GrokTaskRow } from '../db/grokTasks.js';
 import type { Repos } from '../db/repos.js';
@@ -13,7 +14,7 @@ export const DEFAULT_TICKET_AUTO_CLOSE_MS = 86400000;
 
 export interface GrokTaskSweeperDeps {
   /** With `tickets`, each sweep also auto-closes answered tickets (T15). */
-  repos: Pick<Repos, 'grokTasks'> & Partial<Pick<Repos, 'tickets'>>;
+  repos: Pick<Repos, 'grokTasks'> & Partial<Pick<Repos, 'tickets' | 'bugReports'>>;
   replier: Pick<Replier, 'push'>;
   config: Pick<Config, 'ADMIN_LINE_USER_ID'> &
     Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN' | 'TICKET_AUTO_CLOSE_MS'>>;
@@ -44,7 +45,7 @@ function payloadOf(row: GrokTaskRow): { text: string; context: PayloadContext } 
 /**
  * Marks open grok_tasks whose `expires_at` passed as `expired` and falls back to humans:
  * service_question → user `grokTimeout` + ticket (or admin notice); incident_triage → admin
- * notice; summarize_suggestion → log only. Each pass also auto-closes idle answered tickets.
+ * notice; bug_report → bug `expired` + DM to the reporter; summarize_suggestion → log only. Each pass also auto-closes idle answered tickets.
  */
 export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
   const { repos, replier } = deps;
@@ -95,6 +96,25 @@ export function startGrokTaskSweeper(deps: GrokTaskSweeperDeps) {
         kind: 'triage',
         text: adminTriageNotice({ incidentId, text: '專人系統逾時未回覆分析結果。' }),
         meta,
+      });
+    } else if (row.type === 'bug_report') {
+      let bugId: number | undefined;
+      let reporter = row.user_id ?? undefined;
+      try {
+        const v = JSON.parse(row.payload ?? '{}') as { bugId?: number; reporterUserId?: string };
+        bugId = v.bugId;
+        reporter = v.reporterUserId ?? reporter;
+      } catch {
+        // keep defaults
+      }
+      if (bugId === undefined || !reporter) {
+        log.warn(meta, 'expired bug_report task without bugId / reporter');
+        return;
+      }
+      repos.bugReports?.setStatus(bugId, 'expired');
+      await push(reporter, texts.bugTimeoutNotice(displayBugId(bugId)), 'bug_timeout', {
+        ...meta,
+        bugId,
       });
     }
   }

@@ -2,7 +2,11 @@ import type { webhook } from '@line/bot-sdk';
 import { pino } from 'pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRepos, type Repos } from '../../src/db/repos.js';
-import { createDispatcher, type TextMessageContext } from '../../src/handlers/dispatcher.js';
+import {
+  createDispatcher,
+  type GroupTextContext,
+  type TextMessageContext,
+} from '../../src/handlers/dispatcher.js';
 import type { LineApi } from '../../src/line/client.js';
 import { Replier } from '../../src/line/replier.js';
 import { texts } from '../../src/texts.js';
@@ -111,6 +115,67 @@ describe('dispatcher', () => {
     expect(handleText).not.toHaveBeenCalled();
     expect(api.replyMessage).not.toHaveBeenCalled();
     expect(repos.users.get('U1')).toBeUndefined();
+    expect(repos.messages.recent('U1', 10)).toHaveLength(0);
+  });
+
+  it('routes group / room text to handleGroupText when the profile defines it', async () => {
+    const handleGroupText = vi.fn<(ctx: GroupTextContext) => Promise<void>>(async () => {});
+    const withGroup = createDispatcher({
+      repos,
+      replier: new Replier(api, repos, silent),
+      handleText,
+      handleGroupText,
+      welcomeText: () => texts.welcomeFallback,
+      log: silent,
+    });
+    const mentionees: webhook.Mentionee[] = [
+      { type: 'user', index: 0, length: 4, isSelf: true, userId: 'Ubot' },
+    ];
+    const ev = messageEvent(
+      { type: 'text', id: 'm1', text: '@bot 壞了', quoteToken: 'q', mention: { mentionees } },
+      { type: 'group', groupId: 'G1', userId: 'U1' },
+    );
+    await withGroup(ev);
+    expect(handleGroupText).toHaveBeenCalledTimes(1);
+    expect(handleGroupText.mock.calls[0][0]).toEqual({
+      groupId: 'G1',
+      sourceType: 'group',
+      userId: 'U1',
+      text: '@bot 壞了',
+      mentionees,
+      replyToken: 'tok',
+      event: ev,
+    });
+
+    await withGroup(
+      messageEvent(
+        { type: 'text', id: 'm2', text: 'hi', quoteToken: 'q' },
+        { type: 'room', roomId: 'R1' },
+      ),
+    );
+    expect(handleGroupText.mock.calls[1][0]).toMatchObject({
+      groupId: 'R1',
+      sourceType: 'room',
+      userId: undefined,
+      mentionees: [],
+    });
+
+    // Non-text group messages and join events are only logged.
+    await withGroup(
+      messageEvent(
+        { type: 'sticker', id: 'm3', packageId: '1', stickerId: '2' },
+        { type: 'group', groupId: 'G1', userId: 'U1' },
+      ),
+    );
+    await withGroup({
+      ...base,
+      type: 'join',
+      replyToken: 'tok',
+      source: { type: 'group', groupId: 'G1' },
+    } as webhook.JoinEvent);
+    expect(handleGroupText).toHaveBeenCalledTimes(2);
+    expect(handleText).not.toHaveBeenCalled();
+    expect(api.replyMessage).not.toHaveBeenCalled();
     expect(repos.messages.recent('U1', 10)).toHaveLength(0);
   });
 

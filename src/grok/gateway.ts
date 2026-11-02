@@ -4,17 +4,20 @@ import type { Config } from '../config.js';
 import type { HealthResult } from '../health/check.js';
 import { logger } from '../logger.js';
 
-export type GrokTaskType = 'service_question' | 'incident_triage' | 'summarize_suggestion';
+export type GrokTaskType =
+  'service_question' | 'incident_triage' | 'summarize_suggestion' | 'bug_report';
 
 export interface GrokTask {
   id: string;
   type: GrokTaskType;
   userMessage: string;
   context: ContextMessage[];
-  /** incident_triage only. */
+  /** incident_triage and bug_report. */
   health?: HealthResult;
   /** summarize_suggestion only. */
   existingSuggestions?: Array<{ id: number; title: string }>;
+  /** bug_report only (SPEC-ADMIN §13.4): ISO time the bug was reported. */
+  reportedAt?: string;
 }
 
 /**
@@ -71,7 +74,7 @@ export function bearerHeader(secret: string): string {
  * wording stable so the prompt on the Cursor side stays easy to read and diff.
  */
 export const GROK_INSTRUCTIONS =
-  '你是「王媽媽寵物手工零食」LINE 客服的後援系統。請依 type 處理：service_question 要回答使用者關於商品/訂單/網站的問題；incident_triage 要依 health 與使用者描述整理異常原因與建議處置；summarize_suggestion 要把需求建議整理成 title/summary/category，並比對 existingSuggestions 給出 mergedInto（相似項目的 id）或 null。收到任務後請先 POST callback status=received；處理中可 POST status=processing（可附 text）；完成後 POST status=done 並附 text（繁體中文、口語、1 到 4 句、不用 emoji、不透露內部系統）；service_question：能回答 → done；查不到、需要人工介入、或你只是把問題轉給別人 → status=needs_human 並附上要給客戶看的簡短說明，不要用 done；無法處理時 POST status=failed 並附簡短原因。callback 請用 header x-linebot-token 帶上 token，body 為 JSON。';
+  '你是「王媽媽寵物手工零食」LINE 客服的後援系統。請依 type 處理：service_question 要回答使用者關於商品/訂單/網站的問題；incident_triage 要依 health 與使用者描述整理異常原因與建議處置；summarize_suggestion 要把需求建議整理成 title/summary/category，並比對 existingSuggestions 給出 mergedInto（相似項目的 id）或 null。收到任務後請先 POST callback status=received；處理中可 POST status=processing（可附 text）；完成後 POST status=done 並附 text（繁體中文、口語、1 到 4 句、不用 emoji、不透露內部系統）；service_question：能回答 → done；查不到、需要人工介入、或你只是把問題轉給別人 → status=needs_human 並附上要給客戶看的簡短說明，不要用 done；無法處理時 POST status=failed 並附簡短原因。callback 請用 header x-linebot-token 帶上 token，body 為 JSON。bug_report：網站功能 bug 回報：交給 Claude Code session 調查。收到先回 received；有進度可回 processing 附說明；查明原因或修好回 done 附結果說明（給管理員看，可含技術細節）；無法處理回 failed 附原因。';
 
 /** JSON body of the dispatch request (also documents the contract for the Cursor prompt). */
 export function buildDispatchBody(

@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 import type { Config } from '../config.js';
 import type { Repos } from '../db/repos.js';
 import type { GrokGateway } from '../grok/gateway.js';
-import type { TextMessageContext } from '../handlers/dispatcher.js';
+import type { GroupTextContext, TextMessageContext } from '../handlers/dispatcher.js';
 import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
 import type { Replier } from '../line/replier.js';
@@ -26,6 +26,8 @@ export interface BotProfile {
   name: ProfileName;
   /** Text-message handler passed to the dispatcher. Must never reject. */
   handleText: (ctx: TextMessageContext) => Promise<void>;
+  /** Group / room text handler (admin only, SPEC-ADMIN §13); absent → groups are ignored. Must never reject. */
+  handleGroupText?: (ctx: GroupTextContext) => Promise<void>;
   /** Reply sent on `follow`. */
   welcomeText: () => string;
   /** Extra Hono routes (e.g. `/grok/callback`); mounted inside `createApp`. */

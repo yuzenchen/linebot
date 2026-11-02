@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { createAdminQueriesRepo } from './adminQueries.js';
+import { createBugReportsRepo } from './bugReports.js';
 import { createClassificationsRepo } from './classifications.js';
 import { createEventsRepo } from './events.js';
 import { createGrokTasksRepo } from './grokTasks.js';
@@ -27,6 +28,7 @@ export function createRepos(db: Database) {
     adminQueries: createAdminQueriesRepo(db),
     tickets: createTicketsRepo(db),
     pendingConfirmations: createPendingConfirmationsRepo(db),
+    bugReports: createBugReportsRepo(db),
   };
 }
 

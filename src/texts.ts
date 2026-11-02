@@ -1,3 +1,6 @@
+/** SPEC-ADMIN §13.4: Grok statuses a bug reporter is told about. */
+export type BugNoticeStatus = 'received' | 'processing' | 'done' | 'failed';
+
 /**
  * All user-facing copy (Traditional Chinese, short, no emoji) lives here.
  * Do not hard-code reply text elsewhere.
@@ -37,6 +40,32 @@ export const texts = {
   adminTicketNotFound: '找不到這張工單，請確認編號。',
   adminTicketClosed: '這張工單已關閉，無法回覆。',
   adminTicketListEmpty: '目前沒有待回覆的工單。',
+  groupBugHelp: '請在 tag 後直接描述網站問題，例如：@bot 結帳頁按 LINE Pay 沒反應',
+  bugDispatchFailed: 'Grok 送出失敗',
+  /** SPEC-ADMIN §13.3: group confirmation once a bug report is queued for Grok. */
+  groupBugAccepted: (display: string): string =>
+    `已轉給 Grok 處理（${display}），進度會私訊給回報人。`,
+  /** §13.3: the same reporter tagged the same description again within 60 seconds. */
+  groupBugDuplicate: (display: string): string => `${display} 已在處理中`,
+  /** §13.4: DM to the reporter for each Grok status of a bug report. */
+  bugStatusNotice: (d: { display: string; status: BugNoticeStatus; text?: string }): string => {
+    const head = `[Bug ${d.display}]`;
+    const text = d.text?.trim();
+    switch (d.status) {
+      case 'received':
+        return `${head} 已收到`;
+      case 'processing':
+        return text ? `${head} 處理中：${text}` : `${head} 處理中`;
+      case 'done':
+        return `${head} 完成：${text ?? ''}`;
+      case 'failed':
+        return `${head} 失敗：${text || '未說明原因'}`;
+    }
+  },
+  /** §13.4: DM to the reporter when a bug_report task expires. */
+  bugTimeoutNotice: (display: string): string => `${display} Grok 未在時限內回報`,
+  /** DM to the reporter when Grok is not configured and the report could not be sent. */
+  bugGrokUnconfigured: (display: string): string => `Grok 未設定，${display} 未送出`,
 } as const;
 
 const TICKET_LIST_MAX = 10;

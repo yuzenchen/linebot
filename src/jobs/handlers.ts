@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
+import { displayBugId } from '../bugs/ids.js';
 import type { Config } from '../config.js';
 import type { Repos } from '../db/repos.js';
 import { now as clockNow } from '../db/time.js';
@@ -14,11 +15,11 @@ import type { TicketService } from '../tickets/service.js';
 import { type Job, type JobHandlers, SkipJob } from './queue.js';
 
 export interface JobHandlerDeps {
-  repos: Pick<Repos, 'suggestions' | 'grokTasks'>;
+  repos: Pick<Repos, 'suggestions' | 'grokTasks'> & Partial<Pick<Repos, 'bugReports'>>;
   replier: Pick<Replier, 'push'>;
   grok: GrokGateway;
   config: Pick<Config, 'ADMIN_LINE_USER_ID' | 'GROK_TASK_TIMEOUT_MS'> &
-    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN'>>;
+    Partial<Pick<Config, 'ADMIN_NOTIFY_URL' | 'INTERNAL_NOTIFY_TOKEN' | 'GROK_BUG_TIMEOUT_MS'>>;
   /** Defaults to one built from `config` + `replier`. */
   adminNotifier?: AdminNotifier;
   /** T15: when present, an unanswerable service question opens a ticket instead of a plain notice. */
@@ -56,6 +57,20 @@ const summarizeSuggestionPayload = z.object({
   text: z.string(),
   userHash: z.string().optional(),
 });
+
+/** SPEC-ADMIN §13.3: enqueued by the admin bot's group handler. */
+const bugReportPayload = z.object({
+  bugId: z.number().int().positive(),
+  reporterUserId: z.string().min(1),
+  description: z.string().min(1),
+  health: z.looseObject({
+    status: z.enum(['healthy', 'degraded', 'down']),
+    latencyMs: z.number(),
+    checkedAt: z.string(),
+  }),
+});
+
+export const DEFAULT_GROK_BUG_TIMEOUT_MS = 86400000;
 
 /** Shape the agent must send as `structured` in the `done` callback of summarize_suggestion. */
 export const suggestionSummarySchema = z.object({
@@ -101,6 +116,7 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
   const maxAttempts = deps.maxAttempts ?? 5;
   const notifier = deps.adminNotifier ?? createAdminNotifier({ config, replier, log: deps.log });
   const timeoutMs = config.GROK_TASK_TIMEOUT_MS;
+  const bugTimeoutMs = config.GROK_BUG_TIMEOUT_MS ?? DEFAULT_GROK_BUG_TIMEOUT_MS;
 
   /** User gets `grokUnavailable`; the admin side gets a ticket (T15) or, without one, a notice. */
   async function notifyServiceQuestionFallback(
@@ -130,12 +146,14 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
 
   /**
    * Inserts the grok_tasks row *before* the HTTP call so a callback racing the response already
-   * finds it, then dispatches. On failure the row is marked `failed`.
+   * finds it, then dispatches. On failure the row is marked `failed`. `onInserted` runs right
+   * after the row exists (e.g. to link it from another table before a callback can arrive).
    */
   async function dispatch(
     job: Job,
     userId: string | null,
     task: Omit<GrokTask, 'id'>,
+    opts: { expiresInMs?: number; onInserted?: (taskId: string) => void } = {},
   ): Promise<Dispatch> {
     const id = randomUUID();
     repos.grokTasks.insert({
@@ -144,8 +162,9 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
       type: task.type,
       userId,
       payload: job.payload,
-      expiresAt: new Date(now().getTime() + timeoutMs),
+      expiresAt: new Date(now().getTime() + (opts.expiresInMs ?? timeoutMs)),
     });
+    opts.onInserted?.(id);
     const res = await grok.run({ id, ...task });
     const ctx = { jobId: job.id, taskId: id, type: task.type, attempts: job.attempts };
     if (res.ok) {
@@ -159,6 +178,11 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
     }
     log.error({ ...ctx, error: res.error }, 'grok dispatch rejected');
     return { taskId: id, status: 'failed' };
+  }
+
+  /** DMs the bug reporter (never the group); a push failure makes the job retry. */
+  async function pushReporter(userId: string, text: string, reason: string): Promise<void> {
+    await replier.push(userId, [text], reason);
   }
 
   return {
@@ -214,6 +238,54 @@ export function createJobHandlers(deps: JobHandlerDeps): JobHandlers {
           'grok summarize not dispatched; suggestion stays new',
         );
       }
+    },
+
+    /** SPEC-ADMIN §13.3–13.4: progress goes to the reporter by DM only. */
+    async bug_report(job) {
+      const p = parsePayload(bugReportPayload, job);
+      const display = displayBugId(p.bugId);
+      const bugs = repos.bugReports;
+      if (!grok.configured) {
+        log.warn({ jobId: job.id, bugId: p.bugId }, 'grok not configured; bug report not sent');
+        bugs?.setStatus(p.bugId, 'failed', 'grok_not_configured');
+        await pushReporter(
+          p.reporterUserId,
+          texts.bugGrokUnconfigured(display),
+          'bug_unconfigured',
+        );
+        throw new SkipJob('grok_not_configured');
+      }
+      const reportedAt = bugs?.get(p.bugId)?.created_at ?? now().toISOString();
+      const d = await dispatch(
+        job,
+        p.reporterUserId,
+        {
+          type: 'bug_report',
+          userMessage: p.description,
+          context: [],
+          health: p.health as HealthResult,
+          reportedAt,
+        },
+        {
+          expiresInMs: bugTimeoutMs,
+          onInserted: (taskId) => bugs?.setGrokTask(p.bugId, taskId),
+        },
+      );
+      if (d.status === 'accepted') {
+        bugs?.setStatus(p.bugId, 'sent');
+        return;
+      }
+      if (d.status === 'transient' && job.attempts < maxAttempts) {
+        throw new TransientGrokError('dispatch');
+      }
+      // Final attempt of a transient failure, or a hard rejection: tell the reporter once.
+      bugs?.setStatus(p.bugId, 'failed', texts.bugDispatchFailed);
+      await pushReporter(
+        p.reporterUserId,
+        texts.bugStatusNotice({ display, status: 'failed', text: texts.bugDispatchFailed }),
+        'bug_status',
+      );
+      if (d.status === 'transient') throw new TransientGrokError('dispatch');
     },
   };
 }

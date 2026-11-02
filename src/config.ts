@@ -89,6 +89,21 @@ export const configSchema = z.object({
   ),
   /** How long a staged customer reply waits for the admin's `Y` (T16; default 10 min). */
   CONFIRMATION_TTL_MS: intWithDefault(600000),
+  /** Admin bot, SPEC-ADMIN §13: comma-separated userIds whose group tags report bugs; empty = feature off. */
+  GROUP_COMMAND_USER_IDS: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .optional()
+      .transform((s) =>
+        (s ?? '')
+          .split(',')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0),
+      ),
+  ),
+  /** How long a `bug_report` Grok task may wait before it expires (§13.4; default 24 h). */
+  GROK_BUG_TIMEOUT_MS: intWithDefault(86400000),
 });
 
 /**

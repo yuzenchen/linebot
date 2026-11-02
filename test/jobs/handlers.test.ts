@@ -300,3 +300,119 @@ describe('job handlers with a configured gateway', () => {
     ]);
   });
 });
+
+describe('job handler: bug_report (SPEC-ADMIN §13.4)', () => {
+  const REPORTER = 'Ureporter001';
+  const DAY_MS = 86_400_000;
+
+  function seedBug(s: ReturnType<typeof setup>) {
+    const health = healthResult({ status: 'healthy' });
+    const bugId = s.repos.bugReports.insert(
+      { reporterUserId: REPORTER, groupId: 'Cgroup', description: '結帳按鈕沒反應', health },
+      T0,
+    );
+    const payload = { bugId, reporterUserId: REPORTER, description: '結帳按鈕沒反應', health };
+    return { bugId, payload };
+  }
+
+  it('dispatches with expiry now + 24 h, links the bug row and marks it sent', async () => {
+    const grok = fakeGrok({ ok: true, accepted: true });
+    const s = setup(grok);
+    const { bugId, payload } = seedBug(s);
+    const id = s.queue.enqueue('bug_report', payload);
+    await s.queue.tick();
+    expect(s.repos.jobs.get(id)!.status).toBe('done');
+
+    const row = taskRows(s)[0]!;
+    expect(row).toMatchObject({ type: 'bug_report', user_id: REPORTER, status: 'sent' });
+    expect(row.expires_at).toBe(new Date(T0.getTime() + DAY_MS).toISOString());
+    expect(JSON.parse(row.payload)).toEqual(payload);
+    expect(grok.run.mock.calls[0]![0]).toEqual({
+      id: row.id,
+      type: 'bug_report',
+      userMessage: '結帳按鈕沒反應',
+      context: [],
+      health: payload.health,
+      reportedAt: T0.toISOString(),
+    });
+    expect(s.repos.bugReports.get(bugId)).toMatchObject({ status: 'sent', grok_task_id: row.id });
+    expect(s.api.pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('Null gateway: skips, marks the bug failed and DMs the reporter', async () => {
+    const s = setup(new NullGrokGateway());
+    const { bugId, payload } = seedBug(s);
+    const id = s.queue.enqueue('bug_report', payload);
+    await s.queue.tick();
+    const job = s.repos.jobs.get(id)!;
+    expect(job.status).toBe('skipped');
+    expect(job.lastError).toBe('grok_not_configured');
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([REPORTER]);
+    expect(sentTexts(s.api)).toEqual([{ via: 'push', text: texts.bugGrokUnconfigured('B001') }]);
+    expect(texts.bugGrokUnconfigured('B001')).toBe('Grok 未設定，B001 未送出');
+    expect(s.repos.bugReports.get(bugId)!.status).toBe('failed');
+    expect(taskRows(s)).toHaveLength(0);
+  });
+
+  it('transient failures retry silently; the final attempt DMs the reporter once', async () => {
+    const s = setup(fakeGrok({ ok: false, error: 'http_500', transient: true }));
+    const { bugId, payload } = seedBug(s);
+    const id = s.queue.enqueue('bug_report', payload);
+    for (let i = 0; i < 4; i++) {
+      await s.queue.tick();
+      expect(s.api.pushMessage).not.toHaveBeenCalled();
+    }
+    await s.queue.tick();
+    expect(s.repos.jobs.get(id)!.status).toBe('failed');
+    expect(sentTexts(s.api)).toEqual([
+      {
+        via: 'push',
+        text: texts.bugStatusNotice({
+          display: 'B001',
+          status: 'failed',
+          text: texts.bugDispatchFailed,
+        }),
+      },
+    ]);
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([REPORTER]);
+    expect(s.repos.bugReports.get(bugId)!.status).toBe('failed');
+  });
+
+  it('a hard rejection DMs the reporter and finishes the job', async () => {
+    const s = setup(fakeGrok({ ok: false, error: 'http_401', transient: false }));
+    const { bugId, payload } = seedBug(s);
+    const id = s.queue.enqueue('bug_report', payload);
+    await s.queue.tick();
+    expect(s.repos.jobs.get(id)!.status).toBe('done');
+    expect(pushReasons(s.db)).toEqual(['bug_status']);
+    expect(s.repos.bugReports.get(bugId)!.status).toBe('failed');
+  });
+
+  it('honours GROK_BUG_TIMEOUT_MS when set', async () => {
+    const h = harness();
+    const queue = new JobQueue(h.repos.jobs, { logger: silent, baseDelayMs: 0, maxAttempts: 5 });
+    queue.setHandlers(
+      createJobHandlers({
+        repos: h.repos,
+        replier: h.replier,
+        grok: fakeGrok({ ok: true, accepted: true }),
+        config: { GROK_TASK_TIMEOUT_MS: TIMEOUT_MS, GROK_BUG_TIMEOUT_MS: 3_600_000 },
+        now: () => T0,
+        log: silent,
+      }),
+    );
+    const bugId = h.repos.bugReports.insert(
+      { reporterUserId: REPORTER, groupId: 'C', description: 'x' },
+      T0,
+    );
+    queue.enqueue('bug_report', {
+      bugId,
+      reporterUserId: REPORTER,
+      description: 'x',
+      health: healthResult({ status: 'down' }),
+    });
+    await queue.tick();
+    const row = h.db.prepare('SELECT expires_at FROM grok_tasks').get() as { expires_at: string };
+    expect(row.expires_at).toBe(new Date(T0.getTime() + 3_600_000).toISOString());
+  });
+});

@@ -78,6 +78,7 @@ function main(): void {
     repos,
     replier,
     handleText: profile.handleText,
+    handleGroupText: profile.handleGroupText,
     welcomeText: profile.welcomeText,
   });
   const app = createApp({

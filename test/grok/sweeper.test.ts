@@ -153,3 +153,32 @@ describe('grok task sweeper', () => {
     expect(s.repos.grokTasks.get('sum')!.status).toBe('expired');
   });
 });
+
+describe('grok task sweeper: bug_report (SPEC-ADMIN §13.4)', () => {
+  it('expires an overdue bug_report: bug expired, timeout DM to the reporter only', async () => {
+    const s = setup();
+    const REPORTER = 'Ureporter001';
+    const bugId = s.repos.bugReports.insert({
+      reporterUserId: REPORTER,
+      groupId: 'Cgroup0001',
+      description: '首頁破圖',
+    });
+    s.repos.grokTasks.insert({
+      id: 'bug',
+      jobId: 1,
+      type: 'bug_report',
+      userId: REPORTER,
+      payload: { bugId, reporterUserId: REPORTER, description: '首頁破圖', health: {} },
+      expiresAt: new Date(T0.getTime() - 1),
+    });
+    s.repos.bugReports.setStatus(bugId, 'received');
+    expect(await s.sweeper.sweepOnce()).toBe(1);
+    expect(s.repos.grokTasks.get('bug')!.status).toBe('expired');
+    expect(s.repos.bugReports.get(bugId)!.status).toBe('expired');
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([REPORTER]);
+    expect(sentTexts(s.api)).toEqual([{ via: 'push', text: texts.bugTimeoutNotice('B001') }]);
+    expect(texts.bugTimeoutNotice('B001')).toBe('B001 Grok 未在時限內回報');
+    expect(pushReasons(s.db)).toEqual(['bug_timeout']);
+    expect(ticketRows(s)).toHaveLength(0);
+  });
+});

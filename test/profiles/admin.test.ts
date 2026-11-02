@@ -66,6 +66,7 @@ describe('admin profile', () => {
     expect(start).toHaveBeenCalledTimes(1);
     const handlers = start.mock.calls[0][0];
     expect(Object.keys(handlers).sort()).toEqual([
+      'bug_report',
       'incident_triage',
       'service_question',
       'summarize_suggestion',
@@ -112,6 +113,24 @@ describe('admin profile', () => {
     // No GROK_CALLBACK_TOKEN configured -> the route exists but answers 503.
     const res = await app.request('/grok/callback', { method: 'POST' });
     expect(res.status).toBe(503);
+  });
+
+  it('handles group tags from GROUP_COMMAND_USER_IDS; the enduser profile ignores groups', async () => {
+    const { profile, shared, api } = setup({ ...adminEnv, GROUP_COMMAND_USER_IDS: 'Uowner' });
+    expect(shared.config.GROUP_COMMAND_USER_IDS).toEqual(['Uowner']);
+    expect(shared.config.GROK_BUG_TIMEOUT_MS).toBe(86400000);
+    await profile.handleGroupText?.({
+      groupId: 'Cgroup',
+      sourceType: 'group',
+      userId: 'Uowner',
+      text: '@bot 首頁壞了',
+      mentionees: [{ type: 'user', index: 0, length: 4, isSelf: true }],
+      replyToken: 'tok',
+      event: {} as never,
+    });
+    expect(sentTexts(api)).toEqual([{ via: 'reply', text: texts.groupBugAccepted('B001') }]);
+    expect(shared.repos.bugReports.get(1)).toMatchObject({ description: '首頁壞了' });
+    expect(createProfile('enduser', shared).handleGroupText).toBeUndefined();
   });
 
   it('createProfile picks by name', () => {

@@ -329,3 +329,101 @@ describe('POST /grok/callback: summarize_suggestion', () => {
     expect(s.repos.grokTasks.get(id)!.status).toBe('done');
   });
 });
+
+describe('POST /grok/callback: bug_report (SPEC-ADMIN §13.4)', () => {
+  const REPORTER = 'Ureporter001';
+  const GROUP = 'Cgroup0001';
+
+  function seed(s: ReturnType<typeof setup>) {
+    const bugId = s.repos.bugReports.insert({
+      reporterUserId: REPORTER,
+      groupId: GROUP,
+      description: '結帳按鈕沒反應',
+    });
+    const id = `t-bug-${bugId}`;
+    s.repos.grokTasks.insert({
+      id,
+      jobId: 1,
+      type: 'bug_report',
+      userId: REPORTER,
+      payload: { bugId, reporterUserId: REPORTER, description: '結帳按鈕沒反應', health: {} },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    s.repos.bugReports.setGrokTask(bugId, id);
+    s.repos.bugReports.setStatus(bugId, 'sent');
+    return { bugId, id };
+  }
+
+  const notice = (status: 'received' | 'processing' | 'done' | 'failed', text?: string) =>
+    texts.bugStatusNotice({ display: 'B001', status, text });
+
+  it('DMs each status to the reporter only, never the group or the admin', async () => {
+    const s = setup();
+    const { bugId, id } = seed(s);
+    await s.post({ taskId: id, status: 'received' });
+    expect(s.repos.bugReports.get(bugId)!.status).toBe('received');
+    await s.post({ taskId: id, status: 'processing', text: '正在看 log' });
+    expect(s.repos.bugReports.get(bugId)).toMatchObject({
+      status: 'processing',
+      last_text: '正在看 log',
+    });
+    expect((await s.post({ taskId: id, status: 'done', text: '已修好，部署中' })).status).toBe(200);
+    expect(s.repos.bugReports.get(bugId)).toMatchObject({
+      status: 'done',
+      last_text: '已修好，部署中',
+    });
+    expect(s.repos.grokTasks.get(id)!.status).toBe('done');
+
+    expect(sentTexts(s.api)).toEqual([
+      { via: 'push', text: notice('received') },
+      { via: 'push', text: notice('processing', '正在看 log') },
+      { via: 'push', text: notice('done', '已修好，部署中') },
+    ]);
+    expect(notice('received')).toBe('[Bug B001] 已收到');
+    expect(notice('done', '已修好')).toBe('[Bug B001] 完成：已修好');
+    const targets = s.api.pushMessage.mock.calls.map(([r]) => r.to);
+    expect(targets).toEqual([REPORTER, REPORTER, REPORTER]);
+    expect(targets).not.toContain(GROUP);
+    expect(targets).not.toContain(ADMIN);
+    expect(pushReasons(s.db)).toEqual(['bug_status', 'bug_status', 'bug_status']);
+    expect(ticketRows(s)).toHaveLength(0);
+  });
+
+  it('the same status twice is pushed once; a late done after close is not a follow-up', async () => {
+    const s = setup();
+    const { id } = seed(s);
+    await s.post({ taskId: id, status: 'received' });
+    await s.post({ taskId: id, status: 'received' });
+    await s.post({ taskId: id, status: 'processing' });
+    await s.post({ taskId: id, status: 'processing', text: '還在查' });
+    await s.post({ taskId: id, status: 'done', text: '好了' });
+    const late = await s.post({ taskId: id, status: 'done', text: '補充' });
+    expect(await late.json()).toEqual({ ok: true, ignored: true });
+    expect(sentTexts(s.api).map((t) => t.text)).toEqual([
+      notice('received'),
+      notice('processing'),
+      notice('done', '好了'),
+    ]);
+  });
+
+  it('needs_human is treated as failed', async () => {
+    const s = setup();
+    const { bugId, id } = seed(s);
+    await s.post({ taskId: id, status: 'needs_human', text: '需要後端權限' });
+    expect(s.repos.bugReports.get(bugId)).toMatchObject({
+      status: 'failed',
+      last_text: '需要後端權限',
+    });
+    expect(s.repos.grokTasks.get(id)!.status).toBe('failed');
+    expect(sentTexts(s.api)).toEqual([{ via: 'push', text: notice('failed', '需要後端權限') }]);
+    expect(s.api.pushMessage.mock.calls.map(([r]) => r.to)).toEqual([REPORTER]);
+  });
+
+  it('failed without text says the reason is unknown', async () => {
+    const s = setup();
+    const { bugId, id } = seed(s);
+    await s.post({ taskId: id, status: 'failed' });
+    expect(s.repos.bugReports.get(bugId)!.status).toBe('failed');
+    expect(sentTexts(s.api)).toEqual([{ via: 'push', text: '[Bug B001] 失敗：未說明原因' }]);
+  });
+});

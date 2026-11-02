@@ -15,10 +15,25 @@ export interface TextMessageContext {
   event: webhook.MessageEvent;
 }
 
+/** A text message from a group or room (SPEC-ADMIN §13). Not stored in `messages`. */
+export interface GroupTextContext {
+  /** `groupId` for groups, `roomId` for rooms. */
+  groupId: string;
+  sourceType: 'group' | 'room';
+  /** Sender; LINE may omit it. */
+  userId?: string;
+  text: string;
+  mentionees: webhook.Mentionee[];
+  replyToken?: string;
+  event: webhook.MessageEvent;
+}
+
 export interface DispatcherDeps {
   repos: Pick<Repos, 'users' | 'messages'>;
   replier: Replier;
   handleText: (ctx: TextMessageContext) => Promise<void>;
+  /** Group / room text messages; absent → every non-user source is ignored. Must never reject. */
+  handleGroupText?: (ctx: GroupTextContext) => Promise<void>;
   welcomeText: () => string;
   log?: Logger;
 }
@@ -39,13 +54,35 @@ export function defaultWelcomeText(): string {
   return texts.welcomeFallback;
 }
 
-/** Routes one webhook event by source and type. Only `source.type === 'user'` is handled. */
+/**
+ * Routes one webhook event by source and type. `source.type === 'user'` is fully handled; group /
+ * room text messages go to `handleGroupText` when the profile provides it; everything else from a
+ * group / room (non-text, join, leave, …) is only logged.
+ */
 export function createDispatcher(deps: DispatcherDeps) {
-  const { repos, replier, handleText, welcomeText } = deps;
+  const { repos, replier, handleText, handleGroupText, welcomeText } = deps;
   const log = deps.log ?? logger;
 
   return async function dispatch(event: webhook.Event): Promise<void> {
     const source = event.source;
+    if (
+      handleGroupText &&
+      (source?.type === 'group' || source?.type === 'room') &&
+      event.type === 'message' &&
+      event.message.type === 'text'
+    ) {
+      const message = event.message;
+      await handleGroupText({
+        groupId: source.type === 'group' ? source.groupId : source.roomId,
+        sourceType: source.type,
+        userId: source.userId,
+        text: message.text,
+        mentionees: message.mention?.mentionees ?? [],
+        replyToken: event.replyToken,
+        event,
+      });
+      return;
+    }
     if (source?.type !== 'user') {
       log.info({ type: event.type, sourceType: source?.type }, 'ignored non-user source');
       return;

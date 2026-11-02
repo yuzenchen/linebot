@@ -22,14 +22,14 @@
 - `src/texts.ts` — 所有使用者可見文案
 - `src/server.ts` — Hono app、/health（含 `profile`）、webhook 路由、依 `BOT_PROFILE` 建 profile 並接上 dispatcher / extraRoutes / start / stop、graceful shutdown
 - `src/profiles/` — T10：同一份程式碼兩種 bot，由 `BOT_PROFILE` 選擇
-- `src/profiles/types.ts` — `BotProfile`（`handleText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
+- `src/profiles/types.ts` — `BotProfile`（`handleText` / 選用 `handleGroupText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
 - `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
 - `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、工單服務、`/internal/reply`、sweeper 固定啟動）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
-- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`
+- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`；`handleGroupText` = `createGroupBugHandler`（SPEC-ADMIN §13）
 - `src/line/client.ts` — `createLineClient()` 建 `MessagingApiClient`；`LineApi` 介面（reply / push / showLoading，測試傳 fake）
 - `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
 - `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
-- `src/handlers/dispatcher.ts` — `createDispatcher()`：只處理 user source；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
+- `src/handlers/dispatcher.ts` — `createDispatcher()`：處理 user source；group / room 文字訊息交給選用的 `handleGroupText`（`GroupTextContext`，未設定或非文字 / join / leave 只記 log）；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
 - `src/handlers/message.ts` — `createTextMessageHandler()`：SPEC 5.2 主流程（handoff hook、loading、脈絡、分類與 `REPLY_DEADLINE_MS` race、依類別分派、reply → 逾期 push、保底回覆、寫 classifications、低信心 streak）
 - `src/handlers/admin.ts` — `createAdminTextHandler()`：管理端主流程（ADMIN-HANDLER-DESIGN §5）：白名單、T16 工單攔截（模型之前：待確認項 + `Y` 送出 / 其他訊息取消並續處理、「回覆 T042 …」建草稿、「待回覆」「工單 T042」「關閉 T042」，全部經 `EnduserClient` 走 HTTP）、loading、脈絡、`runAdminQuery` 與 `REPLY_DEADLINE_MS` race（逾時先回 `adminAckPending` 再 push）、模型用 `reply_customer` 時在回覆尾端補確認文、寫 `admin_queries`、含個資時以 `recordAs` 存佔位文字；`splitReply()` 切 5000 字 / 5 則
 - `src/admin/enduserClient.ts` — `createEnduserClient()`：管理端呼叫客戶端 `/internal/tickets`（列表 / 明細 / 關單）與 `/internal/reply` 的 HTTP 客戶端（`x-internal-token`、8 秒逾時、不記錄 token）；`EnduserClientError`（kind + zh-TW `userMessage`）、`enduserErrorMessage()`
@@ -38,6 +38,7 @@
 - `src/admin/tools.ts` — 8 個 strict 工具定義（zod → JSON schema）、`createToolExecutor()`（並行執行、8000 字上限、`PII_REQUEST` 個資閘門、`report_issue` 寫 incidents + enqueue `incident_triage`、`reply_customer` 經客戶端查工單後只寫 `pending_confirmations` 草稿並回報 `staged`）、`ToolCallRecord`
 - `src/admin/loop.ts` — `runAdminQuery()`：`beta.messages.create` 手寫迴圈（server-side fallback、effort medium、tool_choice auto / 上限時 none + 系統訊息、stop_reason 對應、逾時與總預算），永不 reject；`AdminModelClient` 介面供測試注入 fake
 - `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
+- `src/handlers/groupBug.ts` — `createGroupBugHandler()`：SPEC-ADMIN §13 群組 tag 回報網站 bug（`GROUP_COMMAND_USER_IDS` 白名單 + `isSelf` mention 才動作、`stripSelfMentions()` 依 index / length 去掉 tag、空白回說明、60 秒同人同描述去重、health check → `bug_reports` → enqueue `bug_report`、群組只回一句確認、寫 `admin_queries`）
 - `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
 - `src/handlers/handoff.ts` — `createHandoffService()`：SPEC 5.7 人工轉接（關鍵字 / 連續 2 則低信心 / `/handoff` 進入、24h 到期自動解除；進入時開 `handoff` 工單、期間訊息附加到工單並通知追問）與管理員指令 `/status`、`/resume`、`/handoff`、`/help`
 - `src/classifier/types.ts` — 五類 `categories`、zod `classificationSchema`、`Classifier` / `ClassifyInput` / `ClassifyResult` 型別
@@ -64,9 +65,9 @@
 - `src/health/check.ts` — `createHealthChecker()`：GET health URL、逾時重試一次、healthy / degraded / down 判定、`HEALTH_CACHE_MS` 快取與 in-flight 共用
 - `src/grok/` — GrokGateway 介面、Null 與 Webhook 實作
 - `src/grok/gateway.ts` — `GrokTask` / `GrokResult` / `GrokGateway`、`NullGrokGateway`、`WebhookGrokGateway`（只負責派送：POST Cursor Automations webhook + `Authorization: Bearer`，body 含 `callback` 與 `instructions`，`buildDispatchBody()`）、`createGrokGateway(config)`；改派送 payload 或 instructions 來這裡
-- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed / needs_human（push 使用者 / 管理員、寫 suggestions、service_question failed / needs_human / 轉人工文字的 done 開工單）、更新 `grok_tasks`；已關閉的 service_question 在 `GROK_FOLLOWUP_WINDOW_MS` 內再收到 done → 事後補充（push `grok_followup`、工單 `answered_by=grok`，SPEC-ADMIN §12.4）
+- `src/grok/callback.ts` — `createGrokCallbackRoute()`：`POST /grok/callback` 驗 `x-linebot-token`（401）、zod 驗 body、依 task type 套用 received / processing / done / failed / needs_human（push 使用者 / 管理員、寫 suggestions、service_question failed / needs_human / 轉人工文字的 done 開工單）、bug_report 每個狀態只私訊回報人（同狀態不重推、needs_human 視同 failed、更新 `bug_reports`）、更新 `grok_tasks`；已關閉的 service_question 在 `GROK_FOLLOWUP_WINDOW_MS` 內再收到 done → 事後補充（push `grok_followup`、工單 `answered_by=grok`，SPEC-ADMIN §12.4）
 - `src/grok/deferral.ts` — `DEFERRAL_RE` / `looksLikeDeferral()`：判斷 done 文字是否其實是轉人工
-- `src/grok/sweeper.ts` — `startGrokTaskSweeper()`：每分鐘把逾時的 `grok_tasks` 標 `expired`，service_question push 使用者 `grokTimeout` + 開 `grok_timeout` 工單；同一輪也把 answered 工單超過 `TICKET_AUTO_CLOSE_MS` 自動 `closed`；`sweepOnce()` 供測試
+- `src/grok/sweeper.ts` — `startGrokTaskSweeper()`：每分鐘把逾時的 `grok_tasks` 標 `expired`，service_question push 使用者 `grokTimeout` + 開 `grok_timeout` 工單；同一輪也把 answered 工單超過 `TICKET_AUTO_CLOSE_MS` 自動 `closed`；`sweepOnce()` 供測試；bug_report 逾時 → `bug_reports.status = expired` + 私訊回報人 `bugTimeoutNotice`
 - `src/db/` — SQLite 連線、migrations、repositories
 - `src/db/index.ts` — `openDatabase()`（WAL、pragma、跑 migrations）、`getDb()` / `closeDb()` 單例；`':memory:'` 給測試
 - `src/db/migrate.ts` — `runMigrations(db)`：`schema_migrations` 記錄、依版本套用、可重複執行
@@ -79,6 +80,8 @@
 - `src/db/pendingConfirmations.ts` — `createPendingConfirmationsRepo(db)`：T16 管理員待確認的客戶回覆草稿（每位管理員一筆，`set` 覆蓋、`get(adminUserId, now)` 到期即刪並回 null、`clear`），migration 005
 - `src/db/tickets.ts` — `createTicketsRepo(db)`：T15 工單（SPEC-ADMIN §12.2）：`openOrAppend`（每位客戶同時只一張 open，已有就附加 `\n---\n` 問題）/ `get` / `findOpenByUser` / `findActiveByUser` / `listOpen` / `markAnswered` / `close` / `autoClose` / `recentByUser`，migration 004
 - `src/tickets/` — T15 客戶端工單
+- `src/db/bugReports.ts` — `createBugReportsRepo(db)`：SPEC-ADMIN §13 群組回報的網站 bug（`insert` / `get` / `findRecentDuplicate` / `setStatus` / `setGrokTask`），migration 006
+- `src/bugs/ids.ts` — `displayBugId(1)` → `B001`
 - `src/tickets/ids.ts` — `displayId(42)` → `T042`、`parseTicketId('T42' | 't042' | '42')`
 - `src/tickets/orderIds.ts` — `extractOrderIds(text)`：抓 `#YYYYMMDD-XXXXXXXX`（可帶 D / G 前綴）並正規化
 - `src/tickets/service.ts` — `createTicketService()`：`open()` 開單或附加 + 管理端通知（`[待回覆 T042]` / `[T042 追問]`，通知文字在 `texts.ts`）、`notifyFollowUp()`；jobs/handlers、grok callback、sweeper、handoff、message.ts 的開單點都經由它
@@ -86,18 +89,18 @@
 - `src/tickets/internalTicketsRoute.ts` — `createInternalTicketsRoute()`：客戶端 `/internal/tickets`（T16，管理端讀工單用，同 token 守門）：`GET /?status=open&limit=10` 列表、`GET /:id` 明細（含 context / answer）、`POST /:id/close`；回應不含完整 userId（前 8 碼 + …）
 - `src/jobs/` — 背景任務佇列與 handlers
 - `src/jobs/queue.ts` — `JobQueue`（enqueue / start / stop / tick、重試退避、`SkipJob`）
-- `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`（zod 驗 payload、Null 時 skipped、先寫 `grok_tasks` 再派送、暫時性失敗重試、4xx 直接交人工）
+- `src/jobs/handlers.ts` — `createJobHandlers()`：`service_question`、`incident_triage`、`summarize_suggestion`、`bug_report`（`GROK_BUG_TIMEOUT_MS` 逾時、連結 `bug_reports.grok_task_id`、Null / 最終失敗私訊回報人）（zod 驗 payload、Null 時 skipped、先寫 `grok_tasks` 再派送、暫時性失敗重試、4xx 直接交人工）
 - `src/cli/export-suggestions.ts` — `npm run export:suggestions`：需求建議 Markdown 表格寫到 `${DATA_DIR}/exports/suggestions-YYYY-MM-DD.md`
 - `src/cli/list-users.ts` — `npm run list-users [-- --json]`：使用者、handoff、最後訊息時間與訊息數
 - `src/cli/render.ts` — `renderSuggestionsMarkdown()`（純函式，可單測）、`localDate()`
 - `src/cli/bootstrap.ts` — CLI 共用：讀 `.env`、開 `DATA_DIR` 的 DB、補 LINE 佔位值（logger 需要）
 - `test/` — vitest 測試
-- `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo；`adminQueries.test.ts` 測 admin_queries repo
+- `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo；`adminQueries.test.ts` 測 admin_queries repo；`bugReports.test.ts` 測 bug_reports repo 與 `displayBugId`
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
 - `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`deferral.test.ts`（轉人工文字偵測）、`sweeper.test.ts`（逾時處理）
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
-- `test/handlers/` — dispatcher、message 主流程、incident、feature 測試（`helpers.ts` 共用 harness）
+- `test/handlers/` — dispatcher（含群組路由）、message 主流程、incident、feature、`groupBug.test.ts`（群組 bug 回報）測試（`helpers.ts` 共用 harness）
 - `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
