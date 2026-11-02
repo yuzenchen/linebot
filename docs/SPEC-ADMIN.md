@@ -211,3 +211,51 @@ Grok（Cursor）答不出、逾時或未設定時，客戶收到「改由人工�
 - [ ] 客戶在 open 工單期間追問 → 收到「專人處理中」，管理端收到追問通知，不送 Grok。
 - [ ] Cursor 對已關閉任務再 POST done → 客戶收到補充答案。
 - [ ] 10 分鐘未確認的待確認項自動失效。
+
+## 13. 群組內 tag 管理端 bot 回報網站 bug（2026-11-02 定案）
+
+### 13.1 範圍
+
+管理端 bot 加入 LINE 群組後，**只有指定的人 tag 它**時才動作，唯一的功能是把網站功能 bug 轉給 Grok bot（Cursor automation）。群組內不提供訂單、庫存查詢（避免個資被群組成員看到）。進度與結果**只私訊**給管理員，不進群組。
+
+同日另一項變更：客服 bot → 管理端 bot 的通知轉送暫停（Pi 客服端 `.env` 的 `ADMIN_NOTIFY_URL` 已註解），客服端通知退回由客服 bot 帳號直接推給 `ADMIN_LINE_USER_ID`。
+
+### 13.2 觸發條件（全部成立才動作，否則不回應、只記 log）
+
+1. `BOT_PROFILE=admin`，事件來源是 `group` 或 `room`。
+2. 訊息是文字，且 `message.mention.mentionees` 裡有一個 `isSelf: true`（tag 的是這個 bot）。
+3. 發話者 `source.userId` 在 `GROUP_COMMAND_USER_IDS` 白名單內（目前只有使用者本人）。`userId` 取不到時視為不在白名單。
+
+客服 bot（enduser profile）維持完全忽略群組。
+
+### 13.3 流程
+
+1. 去掉訊息中 tag bot 的那段文字（依 mentionee 的 `index` 與 `length`），trim 後當作 bug 描述。
+2. 描述空白 → reply 群組 `texts.groupBugHelp`「請在 tag 後直接描述網站問題，例如：@bot 結帳頁按 LINE Pay 沒反應」。
+3. 否則：跑 health check，寫一筆 `bug_reports`（id 顯示為 `B001`、reporter userId、groupId、描述、health 摘要、grok_task_id、status），enqueue `bug_report` job。
+4. reply 群組一句確認 `texts.groupBugAccepted(B001)`「已轉給 Grok 處理（B001），進度會私訊給回報人。」群組內不再有其他訊息。
+5. 同一人 60 秒內重複 tag 相同描述 → 不重複開單，回「B001 已在處理中」。
+
+### 13.4 Grok 任務 `bug_report`
+
+- 新任務類型 `bug_report`，payload：`{ id, type: 'bug_report', userMessage: 描述, context: [], health, reportedAt }`。
+- instructions：「網站功能 bug 回報：交給 Claude Code session 調查。收到先回 received；有進度可回 processing 附說明；查明原因或修好回 done 附結果說明（給管理員看，可含技術細節）；無法處理回 failed 附原因。」
+- callback：每個狀態都私訊給 `reporter`（不是群組），文字 `[Bug B001] 已收到 / 處理中：… / 完成：… / 失敗：…`；同一狀態重複不重推。`needs_human` 對 bug_report 視同 failed。
+- 逾時：`bug_report` 用 `GROK_BUG_TIMEOUT_MS`（預設 24 小時），逾時私訊回報人「B001 Grok 未在時限內回報」。
+- 事後補充（§12.4 的 7 天 done）不適用 bug_report。
+
+### 13.5 設定
+
+| 變數 | 端 | 說明 |
+|------|----|------|
+| `GROUP_COMMAND_USER_IDS` | 管理端 | 逗號分隔；空值時群組功能整個關閉 |
+| `GROK_BUG_TIMEOUT_MS` | 管理端 | 預設 86400000 |
+
+LINE Developers 管理端 channel 需打開「Allow bot to join group chats」。
+
+### 13.6 完成定義
+
+- [ ] 白名單者 tag bot 描述 bug → 群組收到確認、Grok 收到 `bug_report`、回報人私訊收到 received / done。
+- [ ] 非白名單者 tag、或沒 tag 的群組訊息 → bot 不回應。
+- [ ] 群組內不出現任何訂單或個資，進度只私訊。
+- [ ] 客服 bot 在群組中仍完全不回應。
