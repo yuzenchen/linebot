@@ -16,8 +16,10 @@ import {
   type EshopClient,
   type ListOrdersParams,
   type MaskedOrder,
+  type Order,
   type Product,
 } from '../eshop/index.js';
+import { ORDERS_LIMIT_MAX } from '../eshop/client.js';
 import type { GrokGateway } from '../grok/gateway.js';
 import { healthRaw } from '../handlers/incident.js';
 import type { HealthChecker } from '../health/check.js';
@@ -38,6 +40,11 @@ const MAX_ORDER_DETAIL = 800;
 const MAX_TICKETS = 10;
 const MAX_TICKET_PREVIEW = 120;
 const MAX_TICKET_QUESTION = 1500;
+/** SPEC-ADMIN §15.2: `revenue` limits; beyond either one the tool errors (no partial sum). */
+export const REVENUE_MAX_DAYS = 366;
+export const REVENUE_MAX_PAGES = 20;
+const REVENUE_TOO_LARGE = '區間太長或訂單太多，請縮小區間';
+const DAY_MS = 24 * 3600_000;
 
 /** Only an explicit ask in *this* message unlocks unmasked data (never the context). */
 export const PII_REQUEST = /電話|手機|地址|住址|e-?mail|信箱|聯絡方式|聯絡資料|完整/i;
@@ -68,6 +75,11 @@ export const getOrderInput = z.strictObject({
 export const listProductsInput = z.strictObject({
   query: nstr('商品名稱關鍵字（子字串、不分大小寫）；全部商品為 null'),
   activeOnly: z.boolean().nullable().describe('只看上架商品；null 視為 true'),
+});
+export const revenueInput = z.strictObject({
+  dateFrom: z.string().describe('區間起點（含），ISO 8601 含 +08:00，例 2026-10-01T00:00:00+08:00'),
+  dateTo: z.string().describe('區間終點（含），例 2026-10-31T23:59:59+08:00'),
+  orderType: z.enum(orderTypes).nullable().describe('訂單類型；不限定為 null'),
 });
 export const emptyInput = z.strictObject({});
 export const reportIssueInput = z.strictObject({
@@ -133,8 +145,13 @@ export const ADMIN_TOOL_DEFS: readonly Anthropic.Beta.BetaTool[] = [
   ),
   toolDef(
     'stats',
-    '查後台統計：今日訂單數與營收、本月營收、待出貨（status=paid 的訂單數）、低庫存數、會員與經銷商數、進行中團購與優惠券、各訂單狀態數。今日與本月以台北時區計算，營收只算已付款且未取消的訂單。問今天或本月營收、整體概況、系統是否正常時呼叫。沒有任意區間。',
+    '查後台統計：今日訂單數與營收、本月營收、待出貨（status=paid 的訂單數）、低庫存數、會員與經銷商數、進行中團購與優惠券、各訂單狀態數。今日與本月以台北時區計算，營收只算已付款且未取消的訂單。問今天或本月營收、整體概況、系統是否正常時呼叫。其他區間的營收用 revenue。',
     emptyInput,
+  ),
+  toolDef(
+    'revenue',
+    '計算任意區間的營收：依下單時間落在區間內、已付款且未取消的訂單金額加總。使用者問今天、本月以外的營收時呼叫（昨天、上個月、某月、最近 N 天、自訂日期）；今天與本月用 stats。區間最長 366 天。回傳 revenue、orders（計入筆數）、byPaymentMethod（各付款方式筆數與金額）、excludedCancelled（已取消未計入）、missingAmount（缺金額未計入）。',
+    revenueInput,
   ),
   toolDef(
     'health',
@@ -170,6 +187,7 @@ export const GROUP_TOOL_NAMES: ReadonlySet<string> = new Set([
   'list_products',
   'low_stock',
   'stats',
+  'revenue',
   'health',
   'list_tickets',
   'get_ticket',
@@ -388,6 +406,83 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
     return { total: res.total ?? res.products.length + res.addons.length, products, addons };
   }
 
+  /**
+   * SPEC-ADMIN §15.2: sums `totalAmount` of paid, non-cancelled orders created in the range.
+   * Fetches every page (100 per page, at most 20 pages); no partial sum on any limit breach.
+   */
+  async function revenue(input: z.infer<typeof revenueInput>) {
+    for (const key of ['dateFrom', 'dateTo'] as const) {
+      if (!isoWithOffset.safeParse(input[key]).success) {
+        throw new ToolInputError(`${key} 必須是 ISO 8601 且含時區，例如 2026-10-30T00:00:00+08:00`);
+      }
+    }
+    const from = Date.parse(input.dateFrom);
+    const to = Date.parse(input.dateTo);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      throw new ToolInputError('dateFrom、dateTo 必須是有效日期');
+    }
+    if (from > to) throw new ToolInputError('dateFrom 不可晚於 dateTo');
+    if (to - from > REVENUE_MAX_DAYS * DAY_MS) throw new ToolInputError(REVENUE_TOO_LARGE);
+
+    const base: ListOrdersParams = {
+      paymentStatus: 'paid',
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
+      limit: ORDERS_LIMIT_MAX,
+    };
+    if (input.orderType !== null) base.orderType = input.orderType;
+
+    const orders: Order[] = [];
+    let pages = 1;
+    for (let page = 1; page <= pages; page++) {
+      const res = await eshop.listOrders({ ...base, page });
+      pages = res.pagination.pages;
+      if (pages > REVENUE_MAX_PAGES) throw new ToolInputError(REVENUE_TOO_LARGE);
+      orders.push(...res.orders);
+    }
+
+    let total = 0;
+    let counted = 0;
+    let excludedCancelled = 0;
+    let missingAmount = 0;
+    let notPaid = 0;
+    const byPaymentMethod: Record<string, { orders: number; revenue: number }> = {};
+    for (const o of orders) {
+      if (o.payment?.status !== 'paid') {
+        notPaid++;
+        continue;
+      }
+      if (o.status === 'cancelled') {
+        excludedCancelled++;
+        continue;
+      }
+      const amount = o.totalAmount;
+      if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+        missingAmount++;
+        continue;
+      }
+      total += amount;
+      counted++;
+      const method = o.payment?.method || 'unknown';
+      const bucket = (byPaymentMethod[method] ??= { orders: 0, revenue: 0 });
+      bucket.orders++;
+      bucket.revenue += amount;
+    }
+    if (notPaid > 0) {
+      log.warn({ userId, notPaid }, 'revenue: paymentStatus=paid filter returned unpaid orders');
+    }
+    return {
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
+      basis: '下單時間',
+      revenue: total,
+      orders: counted,
+      byPaymentMethod,
+      excludedCancelled,
+      missingAmount,
+    };
+  }
+
   async function healthTool() {
     const h = await health.check();
     return { status: h.status, latencyMs: h.latencyMs };
@@ -539,6 +634,8 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
       case 'stats':
         parse(emptyInput, call.input);
         return eshop.stats();
+      case 'revenue':
+        return revenue(parse(revenueInput, call.input));
       case 'health':
         parse(emptyInput, call.input);
         return healthTool();

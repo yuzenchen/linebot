@@ -12,6 +12,7 @@ export const ADMIN_RULES_PROMPT = `你是「王媽媽寵物手工零食（Wama' 
 - 訂單：list_orders（條件查詢、計數）、get_order（單筆明細）。
 - 庫存：list_products（商品與規格庫存）、low_stock（低庫存與加價購）。
 - 系統：health（網站健康檢查）、stats（今日與本月統計）。
+- 營收：revenue（任意區間營收加總；今天與本月用 stats）。
 - 異常回報：report_issue（把功能異常轉給技術分析，結果稍後推播給管理員）。
 - 回覆客戶：reply_customer（替管理員準備要送給工單客戶的回覆）。
 - 工單：查看待回覆工單（list_tickets）與工單明細（get_ticket）。
@@ -33,7 +34,7 @@ export const ADMIN_RULES_PROMPT = `你是「王媽媽寵物手工零食（Wama' 
 - 「未付款」「還沒付」→ paymentStatus=pending；「已付款」→ paymentStatus=paid。付款問題看 paymentStatus，不要用 status 代替。
 - 日期一律是台北時間。dateFrom、dateTo 用 ISO 8601 加 +08:00，dateTo 包含當下這一秒，例如今天是 dateFrom=2026-10-30T00:00:00+08:00、dateTo=2026-10-30T23:59:59+08:00。「今天」「昨天」「這週」「本月」「上個月」直接用下方日期錨點；「最近 N 天」是 N-1 天前 00:00:00 到今天 23:59:59；「這週」從週一算起。
 - 只問「幾筆」時，list_orders 的 limit 設 1，用回傳的 total 回答。
-- 營收只有 stats 的今日（today.revenue）與本月（month.revenue）。其他區間的營收無法計算，直接說明目前只支援今日與本月，可改問訂單筆數。
+- 「今天」「本月」營收 → stats 的 today.revenue、month.revenue；其他區間（昨天、上個月、某月、最近 N 天、自訂日期）→ revenue，日期用下方日期錨點。回覆營收時附一句「依下單時間、已付款未取消訂單計算」；excludedCancelled 或 missingAmount 大於 0 時說明各幾筆未計入。
 - 「待回覆」「有沒有客戶在等」「誰還沒回」「工單」→ 用 list_tickets。
 - 「快沒貨」「低庫存」「要補貨」→ low_stock；問特定商品庫存 → list_products 帶 query。
 - 「系統正常嗎」「網站掛了嗎」→ 呼叫 health 與 stats，直接回結果，不要 report_issue。
@@ -102,7 +103,7 @@ export function buildDateBlock(now: Date): string {
  */
 export const GROUP_PROMPT = `## 群組模式
 這則訊息來自 LINE 群組，群組裡所有成員都看得到你的回覆。
-- 群組內只能查詢，可用工具只有 list_orders、get_order、list_products、low_stock、stats、health、list_tickets、get_ticket。
+- 群組內只能查詢，可用工具只有 list_orders、get_order、list_products、low_stock、stats、revenue、health、list_tickets、get_ticket。
 - 不能回覆客戶、結案或建立回覆草稿，也不能 report_issue。被要求時用一句話說明「這項操作請私訊管理端 bot 處理」，不要假裝已處理。
 - 使用者看起來是在回報網站功能問題（某個頁面或功能壞了、沒反應、出錯）時，不要自行開單或轉交，提醒改用 /bug 回報，例如「@bot /bug 結帳頁按 LINE Pay 沒反應」。
 - 「待回覆」「有沒有客戶在等」這類問題用 list_tickets 回答。

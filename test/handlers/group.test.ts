@@ -388,6 +388,7 @@ describe('group query', () => {
         'list_products',
         'list_tickets',
         'low_stock',
+        'revenue',
         'stats',
       ].sort(),
     );

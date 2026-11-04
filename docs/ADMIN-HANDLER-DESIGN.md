@@ -90,6 +90,7 @@ export function buildSystem(now: Date): Anthropic.Beta.BetaTextBlockParam[] {
 - 訂單：list_orders（條件查詢、計數）、get_order（單筆明細）。
 - 庫存：list_products（商品與規格庫存）、low_stock（低庫存與加價購）。
 - 系統：health（網站健康檢查）、stats（今日與本月統計）。
+- 營收：revenue（任意區間營收加總；今天與本月用 stats）。
 - 異常回報：report_issue（把功能異常轉給技術分析，結果稍後推播給管理員）。
 不能修改任何資料：改訂單狀態、標記付款、退款、調庫存、發優惠券都做不到。被要求時用一句話說明「管理端 bot 只能查詢，請到後台操作」，不要呼叫工具假裝處理。
 與本店後台無關的問題（閒聊、一般知識、寫作等），用一句話婉拒。
@@ -106,7 +107,7 @@ export function buildSystem(now: Date): Anthropic.Beta.BetaTextBlockParam[] {
 - 「未付款」「還沒付」→ paymentStatus=pending；「已付款」→ paymentStatus=paid。付款問題看 paymentStatus，不要用 status 代替。
 - 日期一律是台北時間。dateFrom、dateTo 用 ISO 8601 加 +08:00，dateTo 包含當下這一秒，例如今天是 dateFrom=2026-10-30T00:00:00+08:00、dateTo=2026-10-30T23:59:59+08:00。「今天」「昨天」「這週」「本月」「上個月」直接用下方日期錨點；「最近 N 天」是 N-1 天前 00:00:00 到今天 23:59:59；「這週」從週一算起。
 - 只問「幾筆」時，list_orders 的 limit 設 1，用回傳的 total 回答。
-- 營收只有 stats 的今日（today.revenue）與本月（month.revenue）。其他區間的營收無法計算，直接說明目前只支援今日與本月，可改問訂單筆數。
+- 「今天」「本月」營收 → stats 的 today.revenue、month.revenue；其他區間（昨天、上個月、某月、最近 N 天、自訂日期）→ revenue，日期用下方日期錨點。回覆營收時附一句「依下單時間、已付款未取消訂單計算」；excludedCancelled 或 missingAmount 大於 0 時說明各幾筆未計入。
 - 「快沒貨」「低庫存」「要補貨」→ low_stock；問特定商品庫存 → list_products 帶 query。
 - 「系統正常嗎」「網站掛了嗎」→ 呼叫 health 與 stats，直接回結果，不要 report_issue。
 - 使用者描述具體功能異常（例如「客人說 LINE Pay 付完款訂單沒更新」）→ 先用 list_orders 或 get_order 查相關訂單，再呼叫 report_issue，把查到的訂單編號放進 relatedOrderIds；回覆說明已轉交分析、結果會推播給管理員，並附上 taskId。
@@ -182,7 +183,7 @@ export const reportIssueInput = z.strictObject({
 });
 ```
 
-`ADMIN_TOOL_DEFS` 依此順序：list_orders、get_order、list_products、low_stock、stats、health、report_issue。描述（模型看得到的文字）與回傳：
+`ADMIN_TOOL_DEFS` 依此順序：list_orders、get_order、list_products、low_stock、stats、revenue（T19，SPEC-ADMIN §15）、health、report_issue。描述（模型看得到的文字）與回傳：
 
 | 工具 | description | 執行與回傳（`JSON.stringify` 後當 tool_result 字串，單一結果上限 8000 字，超過截斷） |
 |---|---|---|
@@ -190,7 +191,8 @@ export const reportIssueInput = z.strictObject({
 | get_order | 查單筆訂單明細（品項、金額、付款、配送、客人）。使用者給了訂單編號，或要確認某筆訂單細節時呼叫。查無此單時 found 為 false。 | `getOrder(orderId)`；null → `{ found: false }`；否則 `{ found: true, piiRevealed, detail: describeOrder(maskOrder(o, { revealPii })) }` |
 | list_products | 查商品與規格庫存。使用者問特定商品還有多少、有沒有上架、全部商品庫存時呼叫。回傳最多 50 行：名稱｜庫存｜警戒值｜上架狀態｜各規格庫存。 | `listProducts()` → `activeOnly ?? true` 時排除 `active === false`；query 比對 `name`、`sub`（toLowerCase includes）；`{ total, returned, rows }`，row = `${name}｜庫存 ${stock ?? '-'}｜警戒 ${lowStockThreshold ?? '-'}` + (`active===false` ? `｜未上架`) + (`trackStock===false` ? `｜不追蹤庫存`) + (variants 有值 ? `｜規格 ` + `${label ?? '-'} ${stock ?? '-'}` 以「、」連接) |
 | low_stock | 查低庫存清單（含加價購）。使用者問哪些快沒貨、低庫存、要補貨時呼叫。 | `lowStock()` → `{ total: res.total ?? products.length + addons.length, products: rows ≤50（同上格式）, addons: ['加價購 ${name}｜庫存 ${stock}｜警戒 ${threshold}'] ≤50 }` |
-| stats | 查後台統計：今日訂單數與營收、本月營收、待出貨、低庫存數、會員與經銷商數、進行中團購與優惠券、各訂單狀態數。問今天或本月營收、整體概況、系統是否正常時呼叫。沒有任意區間。 | `stats()` 物件原樣 |
+| stats | 查後台統計：今日訂單數與營收、本月營收、待出貨、低庫存數、會員與經銷商數、進行中團購與優惠券、各訂單狀態數。問今天或本月營收、整體概況、系統是否正常時呼叫。其他區間的營收用 revenue。 | `stats()` 物件原樣 |
+| revenue | 計算任意區間的營收：依下單時間落在區間內、已付款且未取消的訂單金額加總。使用者問今天、本月以外的營收時呼叫（昨天、上個月、某月、最近 N 天、自訂日期）；今天與本月用 stats。區間最長 366 天。回傳 revenue、orders、byPaymentMethod、excludedCancelled、missingAmount。 | 輸入 `dateFrom`、`dateTo`（必填，含 +08:00，dateTo 包含）、`orderType`（nullable）；格式錯誤、dateFrom 晚於 dateTo → is_error；超過 366 天或超過 20 頁 → is_error「區間太長或訂單太多，請縮小區間」，不回部分加總。`listOrders({ paymentStatus: 'paid', dateFrom, dateTo, orderType, limit: 100, page })` 逐頁抓到 `pages`；`payment.status !== 'paid'` 略過、`status === 'cancelled'` 計 excludedCancelled、`totalAmount` 缺值計 missingAmount，其餘加總 → `{ dateFrom, dateTo, basis: '下單時間', revenue, orders, byPaymentMethod: { [payment.method]: { orders, revenue } }, excludedCancelled, missingAmount }`，不含個資 |
 | health | 網站健康檢查。問網站或系統是否正常、是不是掛了時呼叫。status：healthy 正常、degraded 異常、down 無法連線。 | `health.check()` → `{ status, latencyMs }` |
 | report_issue | 把功能異常轉給技術分析（非同步，結果稍後推播給管理員）。只有在使用者描述具體功能異常或客人回報的問題時呼叫，且先用其他工具查過相關訂單；單純問系統是否正常時不要呼叫。每次對話最多一次。 | 見下 |
 

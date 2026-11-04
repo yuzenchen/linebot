@@ -158,3 +158,9 @@ Pi 兩個容器更新、`.env.admin` 加 `ENDUSER_INTERNAL_URL`、CURSOR-AUTOMAT
 - [ ] 狀態
 
 `handlers/groupBug.ts` 改名 `handlers/group.ts`（`createGroupHandler`）：去掉 tag 後空白回 `groupHelp`；開頭 `/bug`（含全形「／」、不分大小寫）走 §13 回報流程且不呼叫模型，描述存 `/bug` 之後的文字、空描述回新的 `groupBugHelp`；其他交給 `runAdminQuery`，只給唯讀工具子集（`GROUP_TOOL_DEFS`，executor 以 `allowedTools` 再擋一次）並在 system prompt 規則 block 之後加群組段落，私訊快捷指令不生效；上下文用 migration 007 `group_context`（每個群組的查詢與回覆，不含 `/bug`，與私訊分開）；逾時先回 `adminAckPending` 再 push 群組；每次 tag 寫 `admin_queries`，含個資存佔位文字；例外回 `groupBugError`（新文案）。測試：`/bug` 各種寫法與不在開頭、空 tag / 空 `/bug`、bug 不呼叫模型、工具子集與拒絕 `reply_customer`、上下文隔離、deadline、個資佔位、非白名單、快捷指令交給模型。
+
+## T19 任意區間營收工具 `revenue`（Medium）— 依賴：T18
+
+- [ ] 狀態
+
+規格見 `docs/SPEC-ADMIN.md` 第 15 節。`admin/tools.ts` 新增唯讀工具 `revenue`（`dateFrom`、`dateTo` 必填含 +08:00、`orderType` 可 null）：`listOrders` 帶 `paymentStatus=paid`、每頁 100 筆逐頁抓到底，排除已取消、缺金額另計，回 `revenue`、`orders`、`byPaymentMethod`、`excludedCancelled`、`missingAmount`、`basis`；區間超過 366 天或超過 20 頁回「區間太長或訂單太多，請縮小區間」，不回部分加總；私訊與群組子集都提供。prompt：今天、本月營收仍用 `stats`，其他區間用 `revenue`，回覆附口徑說明。測試：多頁加總、排除已取消、缺金額、付款方式分組、orderType 與 paymentStatus 參數、超過 20 頁 / 366 天 / 起訖顛倒 / 格式錯誤、eshop 錯誤、群組可用。上線前依 §15.4 比對本月口徑並記入 `docs/VERIFY.md`。

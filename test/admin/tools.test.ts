@@ -4,6 +4,8 @@ import { buildDateBlock, buildSystem, CAP_INSTRUCTION } from '../../src/admin/pr
 import {
   ADMIN_TOOL_DEFS,
   createToolExecutor,
+  GROUP_TOOL_DEFS,
+  GROUP_TOOL_NAMES,
   MAX_CALLS_PER_ROUND,
   type ToolExecutorDeps,
 } from '../../src/admin/tools.js';
@@ -53,6 +55,7 @@ describe('ADMIN_TOOL_DEFS', () => {
       'list_products',
       'low_stock',
       'stats',
+      'revenue',
       'health',
       'report_issue',
       'reply_customer',
@@ -546,5 +549,176 @@ describe('list_tickets / get_ticket', () => {
     expect(parse(a)).toEqual({ error: '找不到這張工單' });
     expect(b.is_error).toBe(true);
     expect(s.executor.records[0]).toMatchObject({ name: 'get_ticket', ticketId: 42, ok: false });
+  });
+});
+
+describe('revenue', () => {
+  const RANGE = {
+    dateFrom: '2026-10-01T00:00:00+08:00',
+    dateTo: '2026-10-31T23:59:59+08:00',
+    orderType: null,
+  };
+  const page = (orders: ReturnType<typeof order>[], p: number, pages: number) => ({
+    orders,
+    pagination: { page: p, limit: 100, total: pages * 100, pages },
+  });
+
+  it('sums every page, excludes cancelled / missing amount, groups by payment method', async () => {
+    const s = setup();
+    s.eshop.listOrders
+      .mockResolvedValueOnce(
+        page(
+          [
+            order({ totalAmount: 1000 }),
+            order({ totalAmount: 500, payment: { method: 'bank_transfer', status: 'paid' } }),
+            order({ totalAmount: 9999, status: 'cancelled' }),
+          ],
+          1,
+          2,
+        ),
+      )
+      .mockResolvedValueOnce(
+        page(
+          [
+            order({ totalAmount: 260 }),
+            order({ totalAmount: null }),
+            order({ totalAmount: 777, payment: { method: 'linepay', status: 'refunded' } }),
+          ],
+          2,
+          2,
+        ),
+      );
+    const [r] = await s.executor.runRound([toolUse('t1', 'revenue', RANGE)]);
+    expect(r.is_error).toBeUndefined();
+    expect(parse(r)).toEqual({
+      dateFrom: RANGE.dateFrom,
+      dateTo: RANGE.dateTo,
+      basis: '下單時間',
+      revenue: 1760,
+      orders: 3,
+      byPaymentMethod: {
+        linepay: { orders: 2, revenue: 1260 },
+        bank_transfer: { orders: 1, revenue: 500 },
+      },
+      excludedCancelled: 1,
+      missingAmount: 1,
+    });
+    expect(r.content).not.toContain('王小明');
+    expect(r.content).not.toContain('0912');
+    expect(s.eshop.listOrders).toHaveBeenCalledTimes(2);
+    expect(s.eshop.listOrders.mock.calls.map((c) => c[0])).toEqual([
+      {
+        paymentStatus: 'paid',
+        dateFrom: RANGE.dateFrom,
+        dateTo: RANGE.dateTo,
+        limit: 100,
+        page: 1,
+      },
+      {
+        paymentStatus: 'paid',
+        dateFrom: RANGE.dateFrom,
+        dateTo: RANGE.dateTo,
+        limit: 100,
+        page: 2,
+      },
+    ]);
+    expect(s.executor.records[0]).toMatchObject({ name: 'revenue', ok: true });
+  });
+
+  it('passes orderType through; empty range sums to zero', async () => {
+    const s = setup();
+    s.eshop.listOrders.mockResolvedValue(page([], 1, 0));
+    const [r] = await s.executor.runRound([
+      toolUse('t1', 'revenue', { ...RANGE, orderType: 'dealer' }),
+    ]);
+    expect(s.eshop.listOrders).toHaveBeenCalledTimes(1);
+    expect(s.eshop.listOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ orderType: 'dealer', paymentStatus: 'paid' }),
+    );
+    expect(parse(r)).toMatchObject({
+      revenue: 0,
+      orders: 0,
+      byPaymentMethod: {},
+      excludedCancelled: 0,
+      missingAmount: 0,
+    });
+  });
+
+  it('more than 20 pages → is_error, no partial sum, stops fetching', async () => {
+    const s = setup();
+    s.eshop.listOrders.mockResolvedValue(page([order({ totalAmount: 100 })], 1, 21));
+    const [r] = await s.executor.runRound([toolUse('t1', 'revenue', RANGE)]);
+    expect(r.is_error).toBe(true);
+    expect(parse(r)).toEqual({ error: '區間太長或訂單太多，請縮小區間' });
+    expect(s.eshop.listOrders).toHaveBeenCalledTimes(1);
+    expect(s.executor.records[0]).toMatchObject({ name: 'revenue', ok: false });
+  });
+
+  it('exactly 20 pages is fine', async () => {
+    const s = setup();
+    s.eshop.listOrders.mockImplementation(async (p) =>
+      page([order({ totalAmount: 10 })], p?.page ?? 1, 20),
+    );
+    const [r] = await s.executor.runRound([toolUse('t1', 'revenue', RANGE)]);
+    expect(parse(r)).toMatchObject({ revenue: 200, orders: 20 });
+    expect(s.eshop.listOrders).toHaveBeenCalledTimes(20);
+  });
+
+  it('rejects ranges over 366 days, reversed, or malformed without calling eshop', async () => {
+    const s = setup();
+    const ok = await s.executor.runRound([
+      toolUse('t0', 'revenue', {
+        ...RANGE,
+        dateFrom: '2024-01-01T00:00:00+08:00',
+        dateTo: '2024-12-31T23:59:59+08:00',
+      }),
+    ]);
+    expect(ok[0]!.is_error).toBeUndefined();
+    s.eshop.listOrders.mockClear();
+
+    const cases: [Record<string, unknown>, string][] = [
+      [
+        { dateFrom: '2025-01-01T00:00:00+08:00', dateTo: '2026-01-02T23:59:59+08:00' },
+        '區間太長或訂單太多，請縮小區間',
+      ],
+      [
+        { dateFrom: '2026-10-31T00:00:00+08:00', dateTo: '2026-10-01T23:59:59+08:00' },
+        'dateFrom 不可晚於 dateTo',
+      ],
+      [{ dateFrom: '2026-10-01T00:00:00' }, 'dateFrom'],
+      [{ dateTo: 'yesterday' }, 'dateTo'],
+      [{ dateFrom: '2026-13-45T00:00:00+08:00' }, 'dateFrom'],
+    ];
+    for (const [over, msg] of cases) {
+      const [r] = await s.executor.runRound([toolUse('t1', 'revenue', { ...RANGE, ...over })]);
+      expect(r.is_error).toBe(true);
+      expect(parse(r).error).toContain(msg);
+    }
+    const [missing] = await s.executor.runRound([
+      toolUse('t1', 'revenue', { dateFrom: RANGE.dateFrom, dateTo: RANGE.dateTo }),
+    ]);
+    expect(missing.is_error).toBe(true);
+    expect(s.eshop.listOrders).not.toHaveBeenCalled();
+  });
+
+  it('eshop errors propagate like other tools', async () => {
+    const s = setup();
+    s.eshop.listOrders
+      .mockResolvedValueOnce(page([order()], 1, 3))
+      .mockRejectedValueOnce(new EshopRateLimited(5));
+    await expect(s.executor.runRound([toolUse('t1', 'revenue', RANGE)])).rejects.toBeInstanceOf(
+      EshopRateLimited,
+    );
+    expect(s.executor.records[0]).toMatchObject({ name: 'revenue', ok: false });
+  });
+
+  it('is offered and allowed in groups', async () => {
+    expect(GROUP_TOOL_NAMES.has('revenue')).toBe(true);
+    expect(GROUP_TOOL_DEFS.map((t) => t.name)).toContain('revenue');
+    const s = setup({ allowedTools: GROUP_TOOL_NAMES });
+    s.eshop.listOrders.mockResolvedValue(page([order()], 1, 1));
+    const [r] = await s.executor.runRound([toolUse('t1', 'revenue', RANGE)]);
+    expect(r.is_error).toBeUndefined();
+    expect(parse(r)).toMatchObject({ revenue: 1260, orders: 1 });
   });
 });
