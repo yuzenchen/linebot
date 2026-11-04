@@ -16,6 +16,7 @@ const expectedTables = [
   'tickets',
   'pending_confirmations',
   'bug_reports',
+  'group_context',
   'schema_migrations',
 ];
 
@@ -36,6 +37,7 @@ describe('runMigrations', () => {
       { version: 4, name: '004_tickets' },
       { version: 5, name: '005_pending_confirmations' },
       { version: 6, name: '006_bug_reports' },
+      { version: 7, name: '007_group_context' },
     ]);
   });
 
@@ -55,6 +57,7 @@ describe('runMigrations', () => {
         'idx_tickets_user_status',
         'idx_tickets_status_updated',
         'idx_bug_reports_reporter_created',
+        'idx_group_context_group',
       ]),
     );
   });

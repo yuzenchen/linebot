@@ -96,9 +96,23 @@ export function buildDateBlock(now: Date): string {
   ].join('\n');
 }
 
-export function buildSystem(now: Date): Anthropic.Beta.BetaTextBlockParam[] {
+/**
+ * SPEC-ADMIN §14.3 step 3: appended after the cached rules block when the message comes from a
+ * LINE group / room. Constant text, so the request prefix stays cacheable per chat kind.
+ */
+export const GROUP_PROMPT = `## 群組模式
+這則訊息來自 LINE 群組，群組裡所有成員都看得到你的回覆。
+- 群組內只能查詢，可用工具只有 list_orders、get_order、list_products、low_stock、stats、health、list_tickets、get_ticket。
+- 不能回覆客戶、結案或建立回覆草稿，也不能 report_issue。被要求時用一句話說明「這項操作請私訊管理端 bot 處理」，不要假裝已處理。
+- 使用者看起來是在回報網站功能問題（某個頁面或功能壞了、沒反應、出錯）時，不要自行開單或轉交，提醒改用 /bug 回報，例如「@bot /bug 結帳頁按 LINE Pay 沒反應」。
+- 「待回覆」「有沒有客戶在等」這類問題用 list_tickets 回答。
+- 個資規則與上面相同。`;
+
+/** `extra` (e.g. `GROUP_PROMPT`) goes after the cached rules block and before the date block. */
+export function buildSystem(now: Date, extra?: string): Anthropic.Beta.BetaTextBlockParam[] {
   return [
     { type: 'text', text: ADMIN_RULES_PROMPT, cache_control: { type: 'ephemeral' } },
+    ...(extra ? [{ type: 'text' as const, text: extra }] : []),
     { type: 'text', text: buildDateBlock(now) },
   ];
 }

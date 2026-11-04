@@ -40,13 +40,16 @@ export const texts = {
   adminTicketNotFound: '找不到這張工單，請確認編號。',
   adminTicketClosed: '這張工單已關閉，無法回覆。',
   adminTicketListEmpty: '目前沒有待回覆的工單。',
-  groupBugHelp: '請在 tag 後直接描述網站問題，例如：@bot 結帳頁按 LINE Pay 沒反應',
+  /** SPEC-ADMIN §14.3 step 1: the bot was tagged with nothing else. */
+  groupHelp:
+    '請在 tag 後輸入要查的資料，例如：@bot 今天的訂單；回報網站問題請用 /bug，例如：@bot /bug 結帳頁按 LINE Pay 沒反應',
+  /** §14.3 step 2: `/bug` without a description. */
+  groupBugHelp: '請在 /bug 後描述網站問題，例如：@bot /bug 結帳頁按 LINE Pay 沒反應',
   bugDispatchFailed: 'Grok 送出失敗',
-  /** Group reply when the bug handler itself fails (internal group, not customer-facing). */
-  groupBugError: '回報失敗，請稍後再 tag 一次。',
+  /** §14.3 step 7: group reply when the group handler itself fails (internal group). */
+  groupBugError: '處理失敗，請稍後再 tag 一次。',
   /** SPEC-ADMIN §13.3: group confirmation once a bug report is queued for Grok. */
-  groupBugAccepted: (display: string): string =>
-    `已轉給 Grok 處理（${display}），進度會私訊給回報人。`,
+  groupBugAccepted: (display: string): string => `已轉給 Grok 處理，異常單號 ${display}`,
   /** §13.3: the same reporter tagged the same description again within 60 seconds. */
   groupBugDuplicate: (display: string): string => `${display} 已在處理中`,
   /** §13.4: DM to the reporter for each Grok status of a bug report. */

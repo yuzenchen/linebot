@@ -25,20 +25,20 @@
 - `src/profiles/types.ts` — `BotProfile`（`handleText` / 選用 `handleGroupText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
 - `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
 - `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、工單服務、`/internal/reply`、sweeper 固定啟動）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
-- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`；`handleGroupText` = `createGroupBugHandler`（SPEC-ADMIN §13）
+- `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`；`handleGroupText` = `createGroupHandler`（SPEC-ADMIN §13–§14）
 - `src/line/client.ts` — `createLineClient()` 建 `MessagingApiClient`；`LineApi` 介面（reply / push / showLoading，測試傳 fake）
 - `src/line/replier.ts` — `Replier`：reply 400 → push fallback、同 token 只用一次、push 寫 `push_log`、出站訊息寫 `messages`、最多 5 則 / 5000 字
 - `src/line/webhook.ts` — `createWebhookRoute()`：驗簽（401）、JSON 解析（400）、`events.insertIfNew` 去重、`setImmediate` 交 dispatch、立刻回 200
 - `src/handlers/dispatcher.ts` — `createDispatcher()`：處理 user source；group / room 文字訊息交給選用的 `handleGroupText`（`GroupTextContext`，未設定或非文字 / join / leave 只記 log）；text → `handleText`（T5 注入）、非文字 → 固定回覆、follow → 歡迎詞（`knowledge/welcome.md` 或 fallback）、unfollow → `followed = 0`
 - `src/handlers/message.ts` — `createTextMessageHandler()`：SPEC 5.2 主流程（handoff hook、loading、脈絡、分類與 `REPLY_DEADLINE_MS` race、依類別分派、reply → 逾期 push、保底回覆、寫 classifications、低信心 streak）
-- `src/handlers/admin.ts` — `createAdminTextHandler()`：管理端主流程（ADMIN-HANDLER-DESIGN §5）：白名單、T16 工單攔截（模型之前：待確認項 + `Y` 送出 / 其他訊息取消並續處理、「回覆 T042 …」建草稿、「待回覆」「工單 T042」「關閉 T042」，全部經 `EnduserClient` 走 HTTP）、loading、脈絡、`runAdminQuery` 與 `REPLY_DEADLINE_MS` race（逾時先回 `adminAckPending` 再 push）、模型用 `reply_customer` 時在回覆尾端補確認文、寫 `admin_queries`、含個資時以 `recordAs` 存佔位文字；`splitReply()` 切 5000 字 / 5 則
+- `src/handlers/admin.ts` — `createAdminTextHandler()`：管理端主流程（ADMIN-HANDLER-DESIGN §5）：白名單、T16 工單攔截（模型之前：待確認項 + `Y` 送出 / 其他訊息取消並續處理、「回覆 T042 …」建草稿、「待回覆」「工單 T042」「關閉 T042」，全部經 `EnduserClient` 走 HTTP）、loading、脈絡、`runAdminQuery` 與 `REPLY_DEADLINE_MS` race（逾時先回 `adminAckPending` 再 push）、模型用 `reply_customer` 時在回覆尾端補確認文、寫 `admin_queries`、含個資時以 `recordAs` 存佔位文字；`splitReply()` 切 5000 字 / 5 則；`raceDeadline()` / `toModelMessages()` 與群組 handler 共用
 - `src/admin/enduserClient.ts` — `createEnduserClient()`：管理端呼叫客戶端 `/internal/tickets`（列表 / 明細 / 關單）與 `/internal/reply` 的 HTTP 客戶端（`x-internal-token`、8 秒逾時、不記錄 token）；`EnduserClientError`（kind + zh-TW `userMessage`）、`enduserErrorMessage()`
 - `src/admin/` — T12b 管理端 Claude tool-use 對話（設計：`docs/ADMIN-HANDLER-DESIGN.md`）
-- `src/admin/prompt.ts` — `ADMIN_RULES_PROMPT`（固定、帶 cache_control）、`buildDateBlock(now)` 台北日期錨點、`buildSystem(now)`、`CAP_INSTRUCTION`
-- `src/admin/tools.ts` — 8 個 strict 工具定義（zod → JSON schema）、`createToolExecutor()`（並行執行、8000 字上限、`PII_REQUEST` 個資閘門、`report_issue` 寫 incidents + enqueue `incident_triage`、`reply_customer` 經客戶端查工單後只寫 `pending_confirmations` 草稿並回報 `staged`）、`ToolCallRecord`
-- `src/admin/loop.ts` — `runAdminQuery()`：`beta.messages.create` 手寫迴圈（server-side fallback、effort medium、tool_choice auto / 上限時 none + 系統訊息、stop_reason 對應、逾時與總預算），永不 reject；`AdminModelClient` 介面供測試注入 fake
+- `src/admin/prompt.ts` — `ADMIN_RULES_PROMPT`（固定、帶 cache_control）、`GROUP_PROMPT`（§14 群組段落，接在規則 block 之後）、`buildDateBlock(now)` 台北日期錨點、`buildSystem(now, extra?)`、`CAP_INSTRUCTION`
+- `src/admin/tools.ts` — 8 個 strict 工具定義（zod → JSON schema）、`createToolExecutor()`（並行執行、8000 字上限、`PII_REQUEST` 個資閘門、`report_issue` 寫 incidents + enqueue `incident_triage`、`reply_customer` 經客戶端查工單後只寫 `pending_confirmations` 草稿並回報 `staged`；選用 `allowedTools` 白名單，其他工具回 is_error）、`GROUP_TOOL_NAMES` / `GROUP_TOOL_DEFS`（§14 群組唯讀子集）、`ToolCallRecord`
+- `src/admin/loop.ts` — `runAdminQuery()`：`beta.messages.create` 手寫迴圈（server-side fallback、effort medium、tool_choice auto / 上限時 none + 系統訊息、stop_reason 對應、逾時與總預算），永不 reject；選用 `tools` / `systemAddendum`（群組用）；`AdminModelClient` 介面供測試注入 fake
 - `src/handlers/incident.ts` — `createIncidentHandler()`：health check、寫 incidents、healthy 追問 / 異常確認、10 分鐘合併、管理員 push、enqueue `incident_triage`
-- `src/handlers/groupBug.ts` — `createGroupBugHandler()`：SPEC-ADMIN §13 群組 tag 回報網站 bug（`GROUP_COMMAND_USER_IDS` 白名單 + `isSelf` mention 才動作、`stripSelfMentions()` 依 index / length 去掉 tag、空白回說明、60 秒同人同描述去重、health check → `bug_reports` → enqueue `bug_report`、群組只回一句確認、寫 `admin_queries`）
+- `src/handlers/group.ts` — `createGroupHandler()`：SPEC-ADMIN §13–§14 群組 tag（`GROUP_COMMAND_USER_IDS` 白名單 + `isSelf` mention 才動作、`stripSelfMentions()` 依 index / length 去掉 tag；空白回 `groupHelp`）。`parseBugCommand()` 判斷開頭 `/bug`（含全形「／」、不分大小寫）→ 回報網站 bug，不呼叫模型（空描述回 `groupBugHelp`、60 秒同人同描述去重、health check → `bug_reports` → enqueue `bug_report`、群組只回一句確認）；其他 → `runAdminQuery` 只給 `GROUP_TOOL_DEFS` + `GROUP_PROMPT`、executor `allowedTools` 拒絕其他工具、私訊快捷指令不生效、上下文讀寫 `group_context`、逾時先回 `adminAckPending` 再 push 群組、含個資存佔位文字；每次 tag 寫 `admin_queries`；例外回 `groupBugError`
 - `src/handlers/feature.ts` — `createFeatureHandler()`：suggestions（userId SHA-256）、enqueue `summarize_suggestion`，不 push
 - `src/handlers/handoff.ts` — `createHandoffService()`：SPEC 5.7 人工轉接（關鍵字 / 連續 2 則低信心 / `/handoff` 進入、24h 到期自動解除；進入時開 `handoff` 工單、期間訊息附加到工單並通知追問）與管理員指令 `/status`、`/resume`、`/handoff`、`/help`
 - `src/classifier/types.ts` — 五類 `categories`、zod `classificationSchema`、`Classifier` / `ClassifyInput` / `ClassifyResult` 型別
@@ -76,6 +76,7 @@
 - `src/db/repos.ts` — `createRepos(db)` 一次建立全部 repository
 - `src/db/{events,users,messages,classifications,incidents,suggestions,pushLog,jobs}.ts` — 各表 repository 工廠 `createXRepo(db)`，prepared statements
 - `src/db/adminQueries.ts` — `createAdminQueriesRepo(db)`：管理端每次查詢一列（`insert` / `recent`），migration 003
+- `src/db/groupContext.ts` — `createGroupContextRepo(db)`：SPEC-ADMIN §14 群組查詢上下文（每個 groupId / roomId 的查詢 in 與 bot 回覆 out，`insert` / `recent`；不含 `/bug`、說明文與 ack，與私訊 `messages` 分開），migration 007
 - `src/db/grokTasks.ts` — `createGrokTasksRepo(db)`：派送給 Cursor agent 的任務（`insert` / `get` / `setStatus` / `recordFollowUp` / `listExpired` / `countOpen`），migration 002
 - `src/db/pendingConfirmations.ts` — `createPendingConfirmationsRepo(db)`：T16 管理員待確認的客戶回覆草稿（每位管理員一筆，`set` 覆蓋、`get(adminUserId, now)` 到期即刪並回 null、`clear`），migration 005
 - `src/db/tickets.ts` — `createTicketsRepo(db)`：T15 工單（SPEC-ADMIN §12.2）：`openOrAppend`（每位客戶同時只一張 open，已有就附加 `\n---\n` 問題）/ `get` / `findOpenByUser` / `findActiveByUser` / `listOpen` / `markAnswered` / `close` / `autoClose` / `recentByUser`，migration 004
@@ -100,7 +101,7 @@
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
 - `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`deferral.test.ts`（轉人工文字偵測）、`sweeper.test.ts`（逾時處理）
 - `test/line/` — webhook 簽章 / 去重整合測試、Replier 單元測試（fake LineApi）
-- `test/handlers/` — dispatcher（含群組路由）、message 主流程、incident、feature、`groupBug.test.ts`（群組 bug 回報）測試（`helpers.ts` 共用 harness）
+- `test/handlers/` — dispatcher（含群組路由）、message 主流程、incident、feature、`group.test.ts`（群組 `/bug` 回報、群組查詢：工具子集、拒絕 reply_customer、上下文隔離、deadline、個資佔位）測試（`helpers.ts` 共用 harness）
 - `test/handlers/handoff.test.ts` — 人工轉接進入條件、期間轉發、到期解除、管理員指令與非管理員 / 未設定管理員
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）

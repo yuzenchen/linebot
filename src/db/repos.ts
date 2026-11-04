@@ -4,6 +4,7 @@ import { createBugReportsRepo } from './bugReports.js';
 import { createClassificationsRepo } from './classifications.js';
 import { createEventsRepo } from './events.js';
 import { createGrokTasksRepo } from './grokTasks.js';
+import { createGroupContextRepo } from './groupContext.js';
 import { createIncidentsRepo } from './incidents.js';
 import { createJobsRepo } from './jobs.js';
 import { createMessagesRepo } from './messages.js';
@@ -29,6 +30,7 @@ export function createRepos(db: Database) {
     tickets: createTicketsRepo(db),
     pendingConfirmations: createPendingConfirmationsRepo(db),
     bugReports: createBugReportsRepo(db),
+    groupContext: createGroupContextRepo(db),
   };
 }
 

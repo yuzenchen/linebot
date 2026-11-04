@@ -123,7 +123,7 @@ describe('admin profile', () => {
       groupId: 'Cgroup',
       sourceType: 'group',
       userId: 'Uowner',
-      text: '@bot 首頁壞了',
+      text: '@bot /bug 首頁壞了',
       mentionees: [{ type: 'user', index: 0, length: 4, isSelf: true }],
       replyToken: 'tok',
       event: {} as never,

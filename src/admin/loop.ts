@@ -57,6 +57,10 @@ export interface RunAdminQueryOptions {
   budgetSignal?: AbortSignal;
   requestTimeoutMs?: number;
   log?: Logger;
+  /** Tool definitions offered to the model; default `ADMIN_TOOL_DEFS` (groups: `GROUP_TOOL_DEFS`). */
+  tools?: readonly Anthropic.Beta.BetaTool[];
+  /** Extra system text after the cached rules block (groups: `GROUP_PROMPT`). */
+  systemAddendum?: string;
 }
 
 function textOf(res: Anthropic.Beta.BetaMessage): string {
@@ -81,7 +85,8 @@ export async function runAdminQuery(opts: RunAdminQueryOptions): Promise<AdminRu
   const log = opts.log ?? logger;
   const now = opts.now ?? (() => new Date());
   const budgetSignal = opts.budgetSignal ?? AbortSignal.timeout(ADMIN_LOOP_BUDGET_MS);
-  const system = buildSystem(now());
+  const system = buildSystem(now(), opts.systemAddendum);
+  const toolDefs = opts.tools ?? ADMIN_TOOL_DEFS;
   const messages: Anthropic.Beta.BetaMessageParam[] = [...opts.messages];
   let toolRounds = 0;
   let servedBy: string | undefined;
@@ -108,7 +113,7 @@ export async function runAdminQuery(opts: RunAdminQueryOptions): Promise<AdminRu
           output_config: { effort: 'medium' },
           cache_control: { type: 'ephemeral' },
           system,
-          tools: [...ADMIN_TOOL_DEFS],
+          tools: [...toolDefs],
           tool_choice: forceAnswer ? { type: 'none' } : { type: 'auto' },
           messages: forceAnswer
             ? [...messages, { role: 'system', content: CAP_INSTRUCTION }]

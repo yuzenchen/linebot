@@ -3,7 +3,7 @@ import { createEnduserClient } from '../admin/enduserClient.js';
 import { createEshopClient, createTokenProvider } from '../eshop/index.js';
 import { startGrokTaskSweeper, type GrokTaskSweeper } from '../grok/sweeper.js';
 import { createAdminTextHandler } from '../handlers/admin.js';
-import { createGroupBugHandler } from '../handlers/groupBug.js';
+import { createGroupHandler } from '../handlers/group.js';
 import { createJobHandlers } from '../jobs/handlers.js';
 import { createDirectAdminNotifier } from '../notify/directAdminNotifier.js';
 import { createInternalNotifyRoute } from '../notify/internalRoute.js';
@@ -15,7 +15,8 @@ import type { BotProfile, Shared } from './types.js';
  * Internal admin bot (SPEC-ADMIN.md, ADMIN-HANDLER-DESIGN.md): allowlist, Claude tool-use loop
  * over the read-only eshop client, `incident_triage` jobs + Grok callback / sweeper whose admin
  * notices go straight to every `ADMIN_USER_IDS` member. Group / room tags from
- * `GROUP_COMMAND_USER_IDS` report website bugs to Grok (`bug_report`, SPEC-ADMIN §13).
+ * `GROUP_COMMAND_USER_IDS` either report website bugs to Grok (`/bug …`, SPEC-ADMIN §13) or run
+ * the read-only admin loop (SPEC-ADMIN §14).
  */
 export function createAdminProfile(shared: Shared): BotProfile {
   const { config, repos, replier, jobs, grok, health, logger } = shared;
@@ -60,11 +61,15 @@ export function createAdminProfile(shared: Shared): BotProfile {
     config,
     log: logger,
   });
-  const handleGroupText = createGroupBugHandler({
+  const handleGroupText = createGroupHandler({
     repos,
     replier,
     health,
     jobs,
+    grok,
+    eshop,
+    enduser,
+    model,
     config,
     log: logger,
   });

@@ -173,6 +173,22 @@ CREATE TABLE IF NOT EXISTS bug_reports (
 CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created ON bug_reports (reporter_user_id, created_at);
 `;
 
+/**
+ * SPEC-ADMIN §14.3 step 4: per-group context for tagged queries (the stripped query in, the bot's
+ * answer out). Kept apart from `messages` so DM context, `/bug` commands and acks never mix in.
+ */
+const groupContext = `
+CREATE TABLE IF NOT EXISTS group_context (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL,
+  user_id TEXT,
+  direction TEXT CHECK (direction IN ('in', 'out')),
+  text TEXT NOT NULL,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_group_context_group ON group_context (group_id, id);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
@@ -180,4 +196,5 @@ export const migrations: Migration[] = [
   { version: 4, name: '004_tickets', sql: tickets },
   { version: 5, name: '005_pending_confirmations', sql: pendingConfirmations },
   { version: 6, name: '006_bug_reports', sql: bugReports },
+  { version: 7, name: '007_group_context', sql: groupContext },
 ];

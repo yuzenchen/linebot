@@ -216,7 +216,7 @@ Grok（Cursor）答不出、逾時或未設定時，客戶收到「改由人工�
 
 ### 13.1 範圍
 
-管理端 bot 加入 LINE 群組後，**只有指定的人 tag 它**時才動作，唯一的功能是把網站功能 bug 轉給 Grok bot（Cursor automation）。群組內不提供訂單、庫存查詢（避免個資被群組成員看到）。進度與結果**只私訊**給管理員，不進群組。
+管理端 bot 加入 LINE 群組後，**只有指定的人 tag 它**時才動作，唯一的功能是把網站功能 bug 轉給 Grok bot（Cursor automation）。群組內不提供訂單、庫存查詢（避免個資被群組成員看到）。**（2026-11-04 起由 §14 取代：群組內也可查詢）**進度與結果**只私訊**給管理員，不進群組。
 
 同日另一項變更：客服 bot → 管理端 bot 的通知轉送暫停（Pi 客服端 `.env` 的 `ADMIN_NOTIFY_URL` 已註解），客服端通知退回由客服 bot 帳號直接推給 `ADMIN_LINE_USER_ID`。
 
@@ -233,7 +233,7 @@ Grok（Cursor）答不出、逾時或未設定時，客戶收到「改由人工�
 1. 去掉訊息中 tag bot 的那段文字（依 mentionee 的 `index` 與 `length`），trim 後當作 bug 描述。
 2. 描述空白 → reply 群組 `texts.groupBugHelp`「請在 tag 後直接描述網站問題，例如：@bot 結帳頁按 LINE Pay 沒反應」。
 3. 否則：跑 health check，寫一筆 `bug_reports`（id 顯示為 `B001`、reporter userId、groupId、描述、health 摘要、grok_task_id、status），enqueue `bug_report` job。
-4. reply 群組一句確認 `texts.groupBugAccepted(B001)`「已轉給 Grok 處理（B001），進度會私訊給回報人。」群組內不再有其他訊息。
+4. reply 群組一句確認 `texts.groupBugAccepted(B001)`「已轉給 Grok 處理，異常單號 B001」群組內不再有其他訊息。
 5. 同一人 60 秒內重複 tag 相同描述 → 不重複開單，回「B001 已在處理中」。
 
 ### 13.4 Grok 任務 `bug_report`
@@ -257,5 +257,45 @@ LINE Developers 管理端 channel 需打開「Allow bot to join group chats」�
 
 - [ ] 白名單者 tag bot 描述 bug → 群組收到確認、Grok 收到 `bug_report`、回報人私訊收到 received / done。
 - [ ] 非白名單者 tag、或沒 tag 的群組訊息 → bot 不回應。
-- [ ] 群組內不出現任何訂單或個資，進度只私訊。
+- [ ] ~~群組內不出現任何訂單或個資~~（§14 取代）；bug 進度只私訊。
 - [ ] 客服 bot 在群組中仍完全不回應。
+
+## 14. 群組內 tag 管理端 bot 查詢資料（2026-11-04 定案）
+
+### 14.1 範圍與決定
+
+- 觸發條件同 §13.2（群組或聊天室、tag 這個 bot、發話者在 `GROUP_COMMAND_USER_IDS`）。
+- 用指令分流，回報 bug **不經過模型**：
+  - tag 後以 `/bug` 開頭 → 回報網站 bug（§13 流程，不呼叫 Opus）。
+  - 其他 → 交給管理端模型查詢資料。
+- 個資處理跟私訊一樣：預設遮罩；訊息明確要求電話、地址等（`PII_REQUEST`）時才顯示完整個資。群組所有成員都看得到這些回覆，這是使用者的決定。
+- 群組只開放唯讀工具：`list_orders`、`get_order`、`list_products`、`low_stock`、`stats`、`health`、`list_tickets`、`get_ticket`。`reply_customer`、`report_issue` 不提供。私訊的快捷指令（待回覆、回覆 T042、Y、結案）在群組不生效，「待回覆」這類查詢交給模型用 `list_tickets` 處理。
+
+### 14.2 指令判斷
+
+- 去掉 tag 文字並 trim 後，開頭符合 `/bug`（不分大小寫，全形「／」也算，後面接空白或直接接中文皆可；緊接英文字母如 `/bugfix` 不算）即為 bug 指令；`/bug` 之後的文字 trim 後是 bug 描述。
+- 例：`@bot /bug 結帳頁按 LINE Pay 沒反應`、`@bot /BUG結帳頁…`。`/bug` 不在開頭（例如「這是 /bug」）不算。
+
+### 14.3 流程
+
+1. 去掉 tag 文字並 trim。空白 → reply `texts.groupHelp`：「請在 tag 後輸入要查的資料，例如：@bot 今天的訂單；回報網站問題請用 /bug，例如：@bot /bug 結帳頁按 LINE Pay 沒反應」。
+2. **`/bug` 指令**：描述空白 → reply `texts.groupBugHelp`，改為「請在 /bug 後描述網站問題，例如：@bot /bug 結帳頁按 LINE Pay 沒反應」。否則照 §13.3 第 3–5 步（health check、寫 `bug_reports`、enqueue `bug_report`、60 秒內同描述去重），群組回覆 `texts.groupBugAccepted`（「已轉給 Grok 處理，異常單號 B00x」）或 `texts.groupBugDuplicate`；進度依 §13.4 只私訊回報人。`bug_reports.description` 存 `/bug` 之後的文字。
+3. **查詢**：跑管理端 tool-use 迴圈（同私訊：model、effort、輪數上限、伺服器端 fallback 不變），只給 §14.1 的唯讀工具。system prompt 加群組段落：訊息來自群組；只能查詢，不能回覆客戶或結案（要私訊處理）；看起來像在回報網站問題時，提醒改用 `/bug`，不要自行開單。
+4. 上下文：同一群組最近 `CONTEXT_MESSAGES` 則查詢的收發文字（只含被 tag 的查詢與 bot 的回覆），讓追問能接上。群組與私訊的上下文互不混用；`/bug` 指令不進上下文。
+5. 查詢的回覆：模型的文字 reply 到群組。超過 `REPLY_DEADLINE_MS` 時先在群組回 `texts.adminAckPending`，完成後 push 到群組（寫 `push_log`）。
+6. 每次 tag 寫一筆 `admin_queries`（userId 為發話者；顯示完整個資時 reply 記佔位文字，同私訊）。
+7. 失敗保底：模型或 eshop 失敗時回迴圈產生的錯誤文案；handler 本身例外回 `texts.groupBugError`，改為「處理失敗，請稍後再 tag 一次。」
+
+### 14.4 成本與延遲
+
+- `/bug`：不呼叫模型，幾秒內回覆（只有 health check）。
+- 查詢：每次呼叫 Opus，約 10–25 秒。
+
+### 14.5 完成定義
+
+- [ ] tag「今天的訂單」→ 群組收到遮罩後的訂單摘要；明確要電話 → 顯示完整電話。
+- [ ] tag「/bug 結帳頁…」→ 不呼叫模型，群組只收到「已轉給 Grok 處理，異常單號 B00x」，進度私訊回報人。
+- [ ] tag 不帶 `/bug` 描述網站問題 → 模型提醒用 `/bug`，不開單。
+- [ ] 追問（例如「那第二筆呢」）能接上前一次查詢。
+- [ ] 群組內要求回覆客戶或結案 → 不執行，模型說明要私訊處理。
+- [ ] 非白名單者 tag、沒 tag → 不回應；客服 bot 在群組仍不回應；私訊行為不變。

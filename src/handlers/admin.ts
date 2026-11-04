@@ -56,7 +56,29 @@ export interface AdminHandlerDeps {
   requestTimeoutMs?: number;
 }
 
-const DEADLINE = Symbol('deadline');
+export const DEADLINE = Symbol('deadline');
+
+/** Resolves with `p`, or with `DEADLINE` after `ms` (`REPLY_DEADLINE_MS`); `p` keeps running. */
+export function raceDeadline<T>(p: Promise<T>, ms: number): Promise<T | typeof DEADLINE> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof DEADLINE>((resolve) => {
+    timer = setTimeout(() => resolve(DEADLINE), ms);
+  });
+  return Promise.race([p, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+/** Context + this message as the model's `messages` (same-role turns merged). */
+export function toModelMessages(
+  text: string,
+  context: ContextMessage[],
+): Anthropic.Beta.BetaMessageParam[] {
+  return buildMessages({ text, context }).map((m) => ({
+    role: m.role,
+    content: m.content as string,
+  }));
+}
 
 /** SPEC-ADMIN §12.3 intercepts (checked before the model, in this order). */
 export const CONFIRM_RE = /^(y|yes|是|確認)$/i;
@@ -139,16 +161,6 @@ export function createAdminTextHandler(
       .filter((r) => r.id !== messageId && r.type === 'text' && r.text !== null)
       .slice(-config.CONTEXT_MESSAGES)
       .map((r) => ({ role: r.direction === 'in' ? 'user' : 'assistant', text: r.text as string }));
-  }
-
-  function raceDeadline<T>(p: Promise<T>): Promise<T | typeof DEADLINE> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<typeof DEADLINE>((resolve) => {
-      timer = setTimeout(() => resolve(DEADLINE), config.REPLY_DEADLINE_MS);
-    });
-    return Promise.race([p, deadline]).finally(() => {
-      if (timer !== undefined) clearTimeout(timer);
-    });
   }
 
   /** Step 1 (pending + Y): sends the staged reply; the pending item is cleared either way. */
@@ -316,10 +328,7 @@ export function createAdminTextHandler(
 
       void replier.showLoading(userId, 60);
       const context = buildContext(userId, messageId);
-      const messages: Anthropic.Beta.BetaMessageParam[] = buildMessages({
-        text: ctx.text,
-        context,
-      }).map((m) => ({ role: m.role, content: m.content as string }));
+      const messages = toModelMessages(ctx.text, context);
       const executor = createToolExecutor({
         eshop: deps.eshop,
         health: deps.health,
@@ -346,7 +355,7 @@ export function createAdminTextHandler(
         requestTimeoutMs: deps.requestTimeoutMs,
       });
 
-      const raced = await raceDeadline(run);
+      const raced = await raceDeadline(run, config.REPLY_DEADLINE_MS);
       let result: AdminRunResult;
       if (raced === DEADLINE) {
         log.info({ userId, messageId, deadlineMs: config.REPLY_DEADLINE_MS }, 'reply deadline hit');

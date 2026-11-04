@@ -163,6 +163,22 @@ export const ADMIN_TOOL_DEFS: readonly Anthropic.Beta.BetaTool[] = [
   ),
 ];
 
+/** SPEC-ADMIN §14.1: the read-only subset offered in groups (no reply_customer / report_issue). */
+export const GROUP_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'list_orders',
+  'get_order',
+  'list_products',
+  'low_stock',
+  'stats',
+  'health',
+  'list_tickets',
+  'get_ticket',
+]);
+
+export const GROUP_TOOL_DEFS: readonly Anthropic.Beta.BetaTool[] = ADMIN_TOOL_DEFS.filter((t) =>
+  GROUP_TOOL_NAMES.has(t.name),
+);
+
 // ---- executor ------------------------------------------------------------------------------
 
 export interface ToolCallRecord {
@@ -202,6 +218,11 @@ export interface ToolExecutorDeps {
   messageId: number;
   /** Masked context, forwarded to `incident_triage`. */
   context: ContextMessage[];
+  /**
+   * When set, only these tools run; any other name comes back as an `is_error` result without
+   * touching eshop / tickets / incidents (SPEC-ADMIN §14.1, groups).
+   */
+  allowedTools?: ReadonlySet<string>;
   now?: () => Date;
   log?: Logger;
 }
@@ -499,6 +520,12 @@ export function createToolExecutor(deps: ToolExecutorDeps): ToolExecutor {
   }
 
   async function execute(call: Anthropic.Beta.BetaToolUseBlock, rec: ToolCallRecord) {
+    if (deps.allowedTools && !deps.allowedTools.has(call.name)) {
+      log.warn({ tool: call.name, userId }, 'tool not allowed in this chat; refused');
+      throw new ToolInputError(
+        `群組內不提供 ${call.name}，只能查詢；這項操作請私訊管理端 bot 處理`,
+      );
+    }
     switch (call.name) {
       case 'list_orders':
         return listOrders(parse(listOrdersInput, call.input), rec);
