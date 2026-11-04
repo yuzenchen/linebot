@@ -320,7 +320,7 @@ LINE Developers 管理端 channel 需打開「Allow bot to join group chats」�
 
 - 「今天」「本月」營收 → 仍用 `stats`（與後台一致）。其他區間（昨天、上個月、某月、最近 N 天、自訂日期）→ `revenue`，日期用日期錨點。
 - 刪除「其他區間的營收無法計算」那條規則。
-- 回覆營收時附一句口徑：「依下單時間、已付款未取消訂單計算」；`excludedCancelled` 或 `missingAmount` 大於 0 時順帶說明。
+- 用 `revenue` 回覆營收時附一句口徑（`stats` 的今日、本月數字不附）：「依下單時間、已付款未取消訂單計算」；`excludedCancelled` 或 `missingAmount` 大於 0 時順帶說明。
 - 群組工具子集（§14.1）加入 `revenue`。
 
 ### 15.4 口徑驗證（上線前）

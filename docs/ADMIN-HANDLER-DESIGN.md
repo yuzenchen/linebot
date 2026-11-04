@@ -107,7 +107,7 @@ export function buildSystem(now: Date): Anthropic.Beta.BetaTextBlockParam[] {
 - 「未付款」「還沒付」→ paymentStatus=pending；「已付款」→ paymentStatus=paid。付款問題看 paymentStatus，不要用 status 代替。
 - 日期一律是台北時間。dateFrom、dateTo 用 ISO 8601 加 +08:00，dateTo 包含當下這一秒，例如今天是 dateFrom=2026-10-30T00:00:00+08:00、dateTo=2026-10-30T23:59:59+08:00。「今天」「昨天」「這週」「本月」「上個月」直接用下方日期錨點；「最近 N 天」是 N-1 天前 00:00:00 到今天 23:59:59；「這週」從週一算起。
 - 只問「幾筆」時，list_orders 的 limit 設 1，用回傳的 total 回答。
-- 「今天」「本月」營收 → stats 的 today.revenue、month.revenue；其他區間（昨天、上個月、某月、最近 N 天、自訂日期）→ revenue，日期用下方日期錨點。回覆營收時附一句「依下單時間、已付款未取消訂單計算」；excludedCancelled 或 missingAmount 大於 0 時說明各幾筆未計入。
+- 「今天」「本月」營收 → stats 的 today.revenue、month.revenue；其他區間（昨天、上個月、某月、最近 N 天、自訂日期）→ revenue，日期用下方日期錨點。用 revenue 回答時附一句「依下單時間、已付款未取消訂單計算」（stats 的數字不用附）；excludedCancelled 或 missingAmount 大於 0 時說明各幾筆未計入。
 - 「快沒貨」「低庫存」「要補貨」→ low_stock；問特定商品庫存 → list_products 帶 query。
 - 「系統正常嗎」「網站掛了嗎」→ 呼叫 health 與 stats，直接回結果，不要 report_issue。
 - 使用者描述具體功能異常（例如「客人說 LINE Pay 付完款訂單沒更新」）→ 先用 list_orders 或 get_order 查相關訂單，再呼叫 report_issue，把查到的訂單編號放進 relatedOrderIds；回覆說明已轉交分析、結果會推播給管理員，並附上 taskId。

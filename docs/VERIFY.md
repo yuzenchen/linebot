@@ -114,3 +114,12 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - 正式環境 log：viewer 登入 200、`GET /orders` 200，四次自然語言查詢 outcome `answered`、latency 4.6 到 7.7 秒、`piiRevealed:false`、第二次起 `cache_read_input_tokens` > 4000。
 - 客戶端 → 管理端的 `/internal/notify` 轉送已啟用，內網連通與 401 保護已驗證。
 - 尚未在正式環境實測：report_issue 經 Cursor 回推、店家老闆帳號。
+
+
+## 群組查詢與區間營收（2026-11-04）
+
+- `a4da43d`（SPEC-ADMIN §14 群組查詢、`/bug`）與 `534b55e`（§15 `revenue`）已部署 Pi `linebot-admin`，migration 007 已套用。群組查詢與 `/bug` 尚未在正式環境實測。
+- §15.4 口徑比對（11-04 18:4x）：`stats.month.revenue` = 4,259；同區間（11-01 ~ 11-04，已付款、未取消、依下單時間）逐頁加總 = 4,259，3 筆，一致。樣本小，跨月付款的差異尚未出現過。
+- 私訊實測：「上個月營收多少」→ `revenue` 10-01 ~ 10-31，NT$123,673、71 筆（LINE Pay 58 筆 NT$101,133、轉帳 13 筆 NT$22,540），7.1 秒。10-29 時 `stats` 本月為 NT$122,363，與月底加總趨勢相符。
+- 「本月營收多少」走 `stats`，但模型多附了 revenue 的口徑句；prompt 已改為只有 `revenue` 才附。
+- 店家老闆 userId 已加入 Pi `.env.admin` 的 `GROUP_COMMAND_USER_IDS`（只開群組，未加 `ADMIN_USER_IDS`）；備份 `.env.admin.bak-20261104`。
