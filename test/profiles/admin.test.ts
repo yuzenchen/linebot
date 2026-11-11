@@ -33,6 +33,7 @@ function setup(env: Record<string, string> = adminEnv) {
   const config = loadConfig(env);
   const shared: Shared = {
     config,
+    db: h.db,
     repos: h.repos,
     replier: h.replier,
     jobs: new JobQueue(h.repos.jobs, { maxAttempts: 1 }),

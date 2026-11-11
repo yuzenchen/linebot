@@ -121,3 +121,24 @@ cloudflared tunnel --url http://localhost:8090
 - 啟動：在 Pi 上 `docker compose -f docker-compose.pi.yml --profile admin up -d --build`，然後 Verify。
 - 店家老闆加好友後，用客戶端 bot 的 `npm run list-users` 或管理端容器的 log 取得他的 userId，加進 `.env.admin` 的 `ADMIN_USER_IDS`（逗號分隔），`--force-recreate linebot-admin`。
 - 最後在客戶端 `.env` 把 `ADMIN_NOTIFY_URL` 那行的 `#` 拿掉並 `--force-recreate linebot`，通知就會改送管理端帳號。
+
+## 9. 員工打卡 bot 的 LINE 帳號（SPEC-STAFF）
+
+員工打卡是**第三個**官方帳號，同一份程式碼以 `BOT_PROFILE=staff` 跑在 Pi 的 `linebot-staff` 容器。不用 eshop、Grok、Anthropic。步驟與第 1 到 3 節相同，差異如下：
+
+1. 新建官方帳號並啟用 Messaging API（例如「王媽媽員工打卡」）；在 Developers Console 建一個新的 Messaging API channel。
+2. LINE Official Account Manager 的「回應設定」：聊天關、Webhook 開、自動回應關、歡迎訊息關。
+3. Developers Console → Messaging API：
+   - **Allow bot to join group chats 打開**（打卡在群組進行，這一項一定要開）。
+   - Webhook URL 填 `https://linebot-staff.yuzen.tw/webhook`，Use webhook 開。
+4. 把 Channel secret 與長期 token 填進 **Pi 上的 `~/linebot/.env.staff`**（複製 `.env.example`）：`BOT_PROFILE=staff`、`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`、`STAFF_ADMIN_USER_IDS`（你與店家老闆的 userId，逗號分隔），`STAFF_GROUP_IDS` 先留空。
+5. Cloudflare：
+   - Zero Trust Public Hostname 新增 `linebot-staff` → `http://linebot-staff:8090`。
+   - 第 7 節的 WAF Skip 規則把 host 條件改成 `http.host in {"linebot.yuzen.tw" "linebot-admin.yuzen.tw" "linebot-staff.yuzen.tw"}`（員工 bot 只需要 `/webhook`，沒有 `/grok/callback`）。
+6. 在 Pi 上：`mkdir -p data-staff`，然後 `docker compose -f docker-compose.pi.yml --profile staff up -d --build`，回 Developers Console 按 Verify。
+7. 在 LINE 開一個**新群組**（只放員工與管理員），把員工打卡帳號邀進群組，在群組裡隨便說一句話。
+8. 讀 log 取得 groupId：`docker logs linebot-staff 2>&1 | grep STAFF_GROUP_IDS`，找 `"groupId":"C…"` 那一段。
+9. 把 groupId 填進 `.env.staff` 的 `STAFF_GROUP_IDS`，然後 `docker compose -f docker-compose.pi.yml up -d --force-recreate linebot-staff`。
+10. 員工在群組輸入 `註冊 名字`，管理員私訊員工帳號 `核准 E001 時薪 200` 後即可打卡。員工想收到補卡結果與每月薪資私訊，需要自己加員工帳號為好友（沒加好友時補卡結果改在群組通知，薪資則略過並在管理員總表標註「未加好友，未通知」）。
+
+管理員的 userId：LINE userId 依 Provider 而定。員工 channel 建在與管理端相同的 Provider 下時，userId 與 `.env.admin` 的 `ADMIN_USER_IDS` 相同，直接沿用；不同 Provider 時，先在 `STAFF_ADMIN_USER_IDS` 填任一暫時值讓容器能啟動，管理員加員工帳號為好友並私訊一句話，再用 `docker exec linebot-staff node dist/cli/list-users.js` 取得 userId，填回後 `--force-recreate linebot-staff`。

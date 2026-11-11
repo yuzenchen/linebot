@@ -1,5 +1,6 @@
 import { createAdminProfile } from './admin.js';
 import { createEnduserProfile } from './enduser.js';
+import { createStaffProfile } from './staff.js';
 import type { BotProfile, ProfileName, Shared } from './types.js';
 
 export type { BotProfile, ProfileName, Shared } from './types.js';
@@ -12,7 +13,6 @@ export function createProfile(name: ProfileName, shared: Shared): BotProfile {
     case 'enduser':
       return createEnduserProfile(shared);
     case 'staff':
-      // Placeholder until T21 adds `src/profiles/staff.ts`.
-      throw new Error('BOT_PROFILE=staff is not implemented yet (T21)');
+      return createStaffProfile(shared);
   }
 }

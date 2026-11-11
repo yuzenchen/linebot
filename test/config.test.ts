@@ -95,6 +95,7 @@ describe('loadConfig', () => {
     expect(cfg.STAFF_MIN_HOURLY_WAGE).toBe(196);
     expect(cfg.STAFF_MAX_SHIFT_HOURS).toBe(16);
     expect(cfg.STAFF_PAYROLL_CRON_HOUR).toBe(9);
+    expect(cfg.STAFF_PAYDAY).toBe(15);
   });
 
   it('requires only STAFF_ADMIN_USER_IDS when BOT_PROFILE=staff', () => {
@@ -122,6 +123,11 @@ describe('loadConfig', () => {
     expect(() =>
       loadConfig({ ...staff, STAFF_ADMIN_USER_IDS: 'Ua', STAFF_PAYROLL_CRON_HOUR: '24' }),
     ).toThrow(/STAFF_PAYROLL_CRON_HOUR/);
+    const one = { ...staff, STAFF_ADMIN_USER_IDS: 'Ua' };
+    expect(loadConfig({ ...one, STAFF_PAYDAY: '28' }).STAFF_PAYDAY).toBe(28);
+    for (const bad of ['0', '29']) {
+      expect(() => loadConfig({ ...one, STAFF_PAYDAY: bad })).toThrow(/STAFF_PAYDAY/);
+    }
   });
 
   it('lists every invalid field', () => {

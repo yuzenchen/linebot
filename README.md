@@ -102,3 +102,13 @@ CLI 讀 `.env`（若存在）與 `DATA_DIR`，不需要 LINE 金鑰。容器內�
 ## 管理端 bot（第二階段）
 
 同一套程式以 `BOT_PROFILE=admin` 跑第二個容器 `linebot-admin`，給管理員與店家老闆用自然語言查訂單、庫存與系統狀況（唯讀，後台 viewer 角色）。設定檔 `.env.admin`、資料夾 `data-admin/`，啟動加 `--profile admin`。規格見 `docs/SPEC-ADMIN.md`，LINE 帳號與 Cloudflare 設定見 `docs/LINE-SETUP.md` 第 8 節。
+
+## 員工打卡與薪資 bot
+
+同一套程式以 `BOT_PROFILE=staff` 跑第三個容器 `linebot-staff`（host port 8092、設定 `.env.staff`、資料 `data-staff/`，啟動加 `--profile staff`），對外 `https://linebot-staff.yuzen.tw`。不連 eshop、Grok、Anthropic，全部是固定格式指令。規格見 `docs/SPEC-STAFF.md`，LINE 帳號、群組與 Cloudflare 設定見 `docs/LINE-SETUP.md` 第 9 節。
+
+- 員工在打卡群組（`STAFF_GROUP_IDS`）輸入 `註冊 名字`、`上班`、`下班`、`補卡 11/12 09:00 上班`；其他群組訊息不回應，未列出的群組只在 log 記下 groupId。
+- 員工私訊：`我的打卡 [2026-11]`、`我的薪資 [2026-11]`、`補卡 …`、`說明`。
+- 管理員私訊（`STAFF_ADMIN_USER_IDS`）：`員工列表`、`待處理`、`核准 / 駁回 E001`、`核准 / 駁回 R001`、`時薪 E001 210 [自 12/1]`、`補卡 E001 …`、`刪除打卡 E001 11/12` → `刪除 S0123`、`停用 / 啟用 E001`、`打卡紀錄 E001 2026-11`、`結算 2026-11 [通知員工]`。
+- 每月 1 日 `STAFF_PAYROLL_CRON_HOUR`（預設 9 點）自動結算上個月：管理員收到總表，員工私訊收到自己的金額（`STAFF_PAYDAY` 日發薪）。容器當時沒在跑也沒關係，啟動後每 5 分鐘檢查一次，當月補跑一次；不會重複結算。
+- `data-staff/` 是出勤紀錄（須保存 5 年），要納入備份。

@@ -19,10 +19,12 @@
 - `eslint.config.js`、`.prettierrc`、`.prettierignore`、`.editorconfig` — lint / 格式設定
 - `src/config.ts` — env 讀取與 zod 驗證
 - `src/logger.ts` — pino
-- `src/texts.ts` — 所有使用者可見文案
-- `src/server.ts` — Hono app、/health（含 `profile`）、webhook 路由、依 `BOT_PROFILE` 建 profile 並接上 dispatcher / extraRoutes / start / stop、graceful shutdown
-- `src/profiles/` — T10：同一份程式碼兩種 bot，由 `BOT_PROFILE` 選擇
-- `src/profiles/types.ts` — `BotProfile`（`handleText` / 選用 `handleGroupText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`
+- `src/texts.ts` — 所有使用者可見文案（staff 部分：`staffTexts` 與 `staff*` 函式，含時間 / 時數 / 金額格式與月結總表、員工薪資私訊）
+- `src/server.ts` — Hono app、/health（含 `profile`）、webhook 路由、依 `BOT_PROFILE` 建 profile 並接上 dispatcher / extraRoutes / start / stop、graceful shutdown；staff 時固定用 `NullGrokGateway`、不掛 `/grok/callback`（`grokCallbackFallback: false` → 404）
+- `src/profiles/` — T10：同一份程式碼三種 bot（enduser / admin / staff），由 `BOT_PROFILE` 選擇
+- `src/profiles/types.ts` — `BotProfile`（`handleText` / 選用 `handleGroupText` / `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`（含 `db` 連線）
+- `src/profiles/staff.ts` — `createStaffProfile()`（T21）：staff service、messenger、payroll reporter、`createStaffHandlers`；`start` 啟動月結排程、`stop` 停止；沒有 extraRoutes、job handlers、eshop / Anthropic / Grok
+- `src/handlers/staff.ts` — `createStaffHandlers()`（T21，SPEC-STAFF §3–9）：群組（只認 `STAFF_GROUP_IDS`，其他群組 / room 記 groupId 後不回應）註冊 / 上班 / 下班 / 補卡、其他群組訊息不回應；私訊員工指令與管理員指令（非管理員用管理指令視為看不懂）、`說明` 依身分列指令、兩段式刪除打卡；申請通知全部管理員、核准 / 駁回結果私訊申請人（失敗改群組）、註冊核准在群組公告；失敗保底回覆
 - `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
 - `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、工單服務、`/internal/reply`、sweeper 固定啟動）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
 - `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`；`handleGroupText` = `createGroupHandler`（SPEC-ADMIN §13–§14）
@@ -83,7 +85,10 @@
 - `src/tickets/` — T15 客戶端工單
 - `src/db/bugReports.ts` — `createBugReportsRepo(db)`：SPEC-ADMIN §13 群組回報的網站 bug（`insert` / `get` / `findRecentDuplicate` / `setStatus` / `setGrokTask`），migration 006
 - `src/bugs/ids.ts` — `displayBugId(1)` → `B001`
-- `src/staff/` — T20 員工打卡與薪資的資料層與計算（SPEC-STAFF；尚未接 LINE，T21 接 profile / 文案 / 排程）；表在 migration 008（employees、wage_rates、shifts、correction_requests、payroll_runs、audit_log）
+- `src/staff/` — T20 員工打卡與薪資的資料層與計算（SPEC-STAFF）；T21 加上 LINE 傳送與月結排程；表在 migration 008（employees、wage_rates、shifts、correction_requests、payroll_runs、audit_log）
+- `src/staff/messenger.ts` — `createStaffMessenger()`（T21）：經 `Replier` 傳送；`packLines()` 依換行切成 ≤5000 字、每次最多 5 則分批（不截斷，第一批 reply、其餘 push）；`notifyAdmins` / `dm` / `dmOrGroup`（私訊失敗改群組），個別失敗只記 log 不中斷
+- `src/staff/payrollReport.ts` — `createPayrollReporter()`（T21，§8）：`runPayroll` 後選擇性私訊員工、管理員總表（要求者 reply、其他管理員 push）、標註「未加好友，未通知」；排程遇到無員工且無待處理時只記錄不發送
+- `src/staff/scheduler.ts` — `startPayrollScheduler()`（T21，§8）：啟動時與每 5 分鐘檢查，台北時間已過當月 1 日 `STAFF_PAYROLL_CRON_HOUR` 且上個月沒有 `schedule` 的 `payroll_runs` 才結算（重啟補跑、不重複）；`dueScheduleMonth()`、`checkOnce()`
 - `src/staff/time.ts` — 台北時區（固定 +08:00，與主機 TZ 無關）日期工具：`taipeiDate` / `taipeiMonth` / `taipeiTime` / `taipeiInstant`、`addDays`、`weekStart`（週一）、`monthBounds`、`previousMonth`、`splitMinutes`
 - `src/staff/ids.ts` — `displayEmployeeId(1)` → `E001`、`displayCorrectionId` → `R001`、`displayShiftId` → `S0001` 與對應 `parse*Id`
 - `src/staff/commands.ts` — `parseStaffCommand(text, now)`：§4–6、§9 全部指令 → `StaffCommand` 判別聯集（非指令回 null、已知關鍵字但參數錯回 `malformed`）；上班 / 下班需 trim 後完全相同；日期 `11/12`、`2026/11/12`（補卡 / 刪除打卡取最近不在未來的年份，`自` 日期取最接近今天的年份可在未來）、月份 `2026-11`；全形數字與冒號可用
@@ -116,9 +121,12 @@
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
 - `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕、push fallback、`start` / `stop`、`/grok/callback` 與 `/internal/notify` 掛載
+- `test/profiles/staff.test.ts` — T21：經 dispatcher 的群組註冊 / 打卡 / 補卡、未設定群組不回應並記 log、私訊員工與管理員指令（含兩段式刪除）、通知與私訊失敗改群組、月結排程（時間未到、只跑一次、重啟補跑）、總表格式與分段、`通知員工`、群組不收薪資、無 eshop / Anthropic / Grok 設定可啟動且無 `/grok/callback`
+- `test/staff/delivery.test.ts` — T21：顯示格式（金額、時數、發薪日）、`packLines`、`dueScheduleMonth`、排程並行與手動結算不影響
 - `test/tickets/` — T15 工單：`helpers.ts`（直接 push 管理員的 ticket service、工單列）、`repo.test.ts`、`ids.test.ts`（id / 訂單編號）、`service.test.ts`（通知文字）、`message.test.ts`（open 工單時的 `ticketPending`）、`internalReplyRoute.test.ts`、`internalTicketsRoute.test.ts`（T16 讀 / 關單路由、token、去識別化）、`followup.test.ts`（callback 事後補充）
-- `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）
+- `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）；Pi 第三個服務 `linebot-staff`（host 8092、`.env.staff`、`data-staff/`，`--profile staff`）
 - `.env.admin`、`data-admin/` — 管理端容器的設定與 SQLite（gitignore）
+- `.env.staff`、`data-staff/` — 員工打卡容器（`linebot-staff`，host 8092，compose profile `staff`）的設定與 SQLite（gitignore；出勤紀錄須保存 5 年，要備份）
 - `.dockerignore` — Docker build context 排除清單
 - `.env.example` — 全部環境變數與說明
 - `data/` — SQLite 與匯出檔（gitignore）

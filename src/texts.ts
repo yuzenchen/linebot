@@ -1,3 +1,7 @@
+import type { CommandKeyword, PunchKind } from './staff/commands.js';
+import type { PayrollEmployeeLine, PayrollResult, ShiftDetail } from './staff/payroll.js';
+import { type LocalDate, type Month, splitMinutes, taipeiDate, taipeiTime } from './staff/time.js';
+
 /** SPEC-ADMIN §13.4: Grok statuses a bug reporter is told about. */
 export type BugNoticeStatus = 'received' | 'processing' | 'done' | 'failed';
 
@@ -280,4 +284,479 @@ export function adminIncidentNotice(d: AdminIncidentDetail): string {
     detail = summary.length > MAX_BODY_SUMMARY ? `${summary.slice(0, MAX_BODY_SUMMARY)}…` : summary;
   }
   return `[異常回報] 使用者 ${userIdShort} 回報：${d.text}\nhealth: ${health.status}${httpStatus} ${health.latencyMs}ms\n${detail}`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Staff bot (SPEC-STAFF). Times are Taipei `HH:MM`, durations floor to whole minutes
+// (「X 小時 Y 分」), money is `NT$` with thousands separators.
+
+/** `570.9` → `9 小時 30 分` (floored). */
+export function staffDuration(totalMinutes: number): string {
+  const { hours, minutes } = splitMinutes(totalMinutes);
+  return `${hours} 小時 ${minutes} 分`;
+}
+
+/** `33667` → `NT$33,667`. */
+export function staffMoney(amount: number): string {
+  const sign = amount < 0 ? '-' : '';
+  const digits = String(Math.abs(Math.round(amount))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${sign}NT$${digits}`;
+}
+
+/** `2026-11-02` → `11/2`. */
+export function staffDay(date: LocalDate): string {
+  const [, m, d] = date.split('-');
+  return `${Number(m)}/${Number(d)}`;
+}
+
+/** ISO instant → Taipei `HH:MM`. */
+export function staffTime(iso: string): string {
+  return taipeiTime(new Date(iso));
+}
+
+/** ISO instant → Taipei `11/12 09:00`. */
+export function staffDayTime(iso: string): string {
+  const d = new Date(iso);
+  return `${staffDay(taipeiDate(d))} ${taipeiTime(d)}`;
+}
+
+export function staffKind(kind: PunchKind): string {
+  return kind === 'in' ? '上班' : '下班';
+}
+
+/** Payday of `month`'s payroll: day `payday` of the next month, as `12/15`. */
+export function staffPayday(month: Month, payday: number): string {
+  const m = Number(month.split('-')[1]);
+  return `${m === 12 ? 1 : m + 1}/${payday}`;
+}
+
+export const staffTexts = {
+  welcome: '這是員工打卡帳號。打卡請在群組輸入：上班、下班。輸入：說明 查看指令。',
+  notRegistered: '尚未註冊，請輸入：註冊 你的名字',
+  notRegisteredDm: '尚未註冊，請在打卡群組輸入：註冊 你的名字',
+  registerInGroup: '註冊請在打卡群組輸入：註冊 你的名字',
+  punchInGroup: '打卡請在群組輸入：上班 或 下班',
+  pendingApproval: '申請審核中',
+  unknownCommand: '看不懂這個指令，輸入：說明',
+  error: '系統忙碌中，請稍後再試。',
+  noPending: '目前沒有待處理項目',
+  noEmployees: '目前沒有員工',
+  correctionFuture: '不能補未來的時間',
+  correctionTooOld: '只能補 31 天內的打卡',
+  employeeHelp: [
+    '員工指令：',
+    '群組：上班、下班、註冊 你的名字',
+    '補卡 11/12 09:00 上班（群組或私訊）',
+    '我的打卡、我的打卡 2026-11',
+    '我的薪資、我的薪資 2026-11',
+  ].join('\n'),
+  adminHelp: [
+    '管理員指令：',
+    '員工列表、待處理',
+    '核准 E001 時薪 200、駁回 E001',
+    '核准 R001、駁回 R001',
+    '時薪 E001 210、時薪 E001 210 自 12/1',
+    '補卡 E001 11/12 18:00 下班',
+    '刪除打卡 E001 11/12，再回：刪除 S0123',
+    '停用 E001、啟用 E001',
+    '打卡紀錄 E001 2026-11',
+    '結算 2026-11、結算 2026-11 通知員工',
+  ].join('\n'),
+  /** Usage hint for a known keyword with bad arguments. */
+  usage: {
+    註冊: '格式：註冊 你的名字（最多 20 字）',
+    補卡: '格式：補卡 11/12 09:00 上班 或 補卡 11/12 18:00 下班',
+    我的打卡: '格式：我的打卡 或 我的打卡 2026-11',
+    我的薪資: '格式：我的薪資 或 我的薪資 2026-11',
+    說明: '格式：說明',
+    員工列表: '格式：員工列表',
+    待處理: '格式：待處理',
+    核准: '格式：核准 E001 時薪 200 或 核准 R001',
+    駁回: '格式：駁回 E001 或 駁回 R001',
+    時薪: '格式：時薪 E001 210 或 時薪 E001 210 自 12/1',
+    刪除打卡: '格式：刪除打卡 E001 11/12',
+    刪除: '格式：刪除 S0123（先用 刪除打卡 E001 11/12 查編號）',
+    停用: '格式：停用 E001',
+    啟用: '格式：啟用 E001',
+    打卡紀錄: '格式：打卡紀錄 E001 2026-11',
+    結算: '格式：結算 2026-11 或 結算 2026-11 通知員工',
+  } satisfies Record<CommandKeyword, string>,
+  /** Extra line for admins who mistype 補卡. */
+  adminCorrectionUsage: '代補：補卡 E001 11/12 18:00 下班',
+} as const;
+
+// --- §4 registration ---
+
+export function staffRegisterRequested(displayId: string, name: string): string {
+  return `已送出註冊申請（${displayId} ${name}），等待管理員核准`;
+}
+export function staffAlreadyRegistered(name: string): string {
+  return `你已註冊為 ${name}`;
+}
+export function staffDisabled(name: string): string {
+  return `${name} 已停用，請聯絡管理員`;
+}
+export function staffAdminRegistrationNotice(displayId: string, name: string): string {
+  return `員工註冊申請 ${displayId} ${name}。核准請回：核准 ${displayId} 時薪 200`;
+}
+export function staffRegistrationApprovedGroup(name: string): string {
+  return `${name} 已可打卡`;
+}
+export function staffRegistrationRejectedDm(name: string): string {
+  return `${name} 的註冊申請未通過`;
+}
+export function staffBelowMinimum(minWage: number): string {
+  return `注意：時薪低於基本工資 ${staffMoney(minWage)}`;
+}
+export function staffApprovedRegistration(
+  displayId: string,
+  name: string,
+  wage: number,
+  from: LocalDate,
+): string {
+  return `已核准 ${displayId} ${name}，時薪 ${staffMoney(wage)} 自 ${staffDay(from)} 起`;
+}
+export function staffRejectedRegistration(displayId: string, name: string): string {
+  return `已駁回 ${displayId} ${name} 的註冊申請`;
+}
+export function staffNotFound(displayId: string): string {
+  return `找不到 ${displayId}`;
+}
+export function staffNotPending(displayId: string, name: string): string {
+  return `${displayId} ${name} 不是申請中的註冊`;
+}
+export function staffNotApproved(displayId: string, name: string): string {
+  return `${displayId} ${name} 尚未核准註冊`;
+}
+
+// --- §5 punches ---
+
+export function staffClockedIn(name: string, iso: string): string {
+  return `${name} 上班 ${staffTime(iso)}`;
+}
+export function staffStaleShiftNote(startIso: string): string {
+  return `前一班（${staffDayTime(startIso)} 上班）未下班，請用補卡補下班時間`;
+}
+export function staffAlreadyIn(name: string, startIso: string): string {
+  return `${name} 已在上班中（${staffTime(startIso)} 起）`;
+}
+export function staffClockedOut(name: string, endIso: string, minutes: number): string {
+  return `${name} 下班 ${staffTime(endIso)}，本次 ${staffDuration(minutes)}`;
+}
+export function staffNoOpenShift(name: string, today: LocalDate): string {
+  return `${name} 沒有上班紀錄，請用補卡：補卡 ${staffDay(today)} 09:00 上班`;
+}
+export function staffOverdue(name: string, maxHours: number): string {
+  return `${name} 上班紀錄已超過 ${maxHours} 小時，請用補卡補下班時間`;
+}
+
+// --- §6 corrections ---
+
+/** `11/12 09:00 上班`. */
+export function staffCorrectionWhat(atIso: string, kind: PunchKind): string {
+  return `${staffDayTime(atIso)} ${staffKind(kind)}`;
+}
+export function staffCorrectionRequested(
+  displayId: string,
+  atIso: string,
+  kind: PunchKind,
+): string {
+  return `已送出補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind)}），等待管理員核准`;
+}
+export function staffCorrectionDuplicate(
+  displayId: string,
+  atIso: string,
+  kind: PunchKind,
+): string {
+  return `補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind)}）已在審核中`;
+}
+export function staffAdminCorrectionNotice(
+  displayId: string,
+  name: string,
+  atIso: string,
+  kind: PunchKind,
+): string {
+  return `補卡申請 ${displayId} ${name} ${staffCorrectionWhat(atIso, kind)}。核准請回：核准 ${displayId}，駁回請回：駁回 ${displayId}`;
+}
+export function staffCorrectionApprovedDm(displayId: string): string {
+  return `補卡 ${displayId} 已核准`;
+}
+export function staffCorrectionRejectedDm(displayId: string): string {
+  return `補卡 ${displayId} 已駁回`;
+}
+/** Group fallback when the applicant cannot be DMed. */
+export function staffCorrectionDecisionGroup(
+  name: string,
+  displayId: string,
+  approved: boolean,
+): string {
+  return `${name} 補卡 ${displayId} ${approved ? '已核准' : '已駁回'}`;
+}
+export function staffApprovedCorrection(
+  displayId: string,
+  name: string,
+  atIso: string,
+  kind: PunchKind,
+  pairedDisplayId: string | null,
+): string {
+  const paired = pairedDisplayId ? `，同時套用 ${pairedDisplayId}` : '';
+  return `已核准補卡 ${displayId}（${name} ${staffCorrectionWhat(atIso, kind)}）${paired}`;
+}
+export function staffRejectedCorrection(displayId: string, name: string): string {
+  return `已駁回補卡 ${displayId}（${name}）`;
+}
+export function staffAdminCorrectionApplied(
+  employeeDisplayId: string,
+  name: string,
+  atIso: string,
+  kind: PunchKind,
+  requestDisplayId: string,
+): string {
+  return `已代補 ${employeeDisplayId} ${name} ${staffCorrectionWhat(atIso, kind)}（${requestDisplayId}）`;
+}
+export function staffCorrectionFailed(
+  displayId: string,
+  reason: 'noOpenShift' | 'overlap' | 'exceedsMaxHours',
+  conflict: { displayId: string; startAt: string; endAt: string | null } | null,
+  maxHours: number,
+): string {
+  const head = `補卡 ${displayId} 無法套用：`;
+  switch (reason) {
+    case 'noOpenShift':
+      return `${head}找不到可配對的上班紀錄`;
+    case 'exceedsMaxHours':
+      return `${head}該班會超過 ${maxHours} 小時`;
+    case 'overlap': {
+      const c = conflict
+        ? `（${conflict.displayId} ${staffDayTime(conflict.startAt)}–${conflict.endAt ? staffTime(conflict.endAt) : '未下班'}）`
+        : '';
+      return `${head}與其他班重疊${c}`;
+    }
+  }
+}
+export function staffCorrectionAlreadyDecided(displayId: string, status: string): string {
+  const label = status === 'approved' ? '已核准' : status === 'rejected' ? '已駁回' : '核准失敗';
+  return `${displayId} 已處理過（${label}）`;
+}
+
+// --- §7 wages / admin ops ---
+
+export function staffWageSet(
+  displayId: string,
+  name: string,
+  wage: number,
+  from: LocalDate,
+  previous: number | null,
+): string {
+  const prev = previous !== null ? `（原 ${staffMoney(previous)}）` : '';
+  return `已設定 ${displayId} ${name} 時薪 ${staffMoney(wage)}，自 ${staffDay(from)} 起${prev}`;
+}
+export function staffStatusUpdated(displayId: string, name: string, disabled: boolean): string {
+  return `已${disabled ? '停用' : '啟用'} ${displayId} ${name}`;
+}
+export function staffStatusUnchanged(displayId: string, name: string, disabled: boolean): string {
+  return `${displayId} ${name} 已是${disabled ? '停用' : '啟用'}狀態`;
+}
+export function staffShiftDeleted(
+  shiftDisplayId: string,
+  name: string,
+  startIso: string,
+  endIso: string | null,
+): string {
+  return `已刪除 ${shiftDisplayId}（${name} ${staffDayTime(startIso)}–${endIso ? staffTime(endIso) : '未下班'}）`;
+}
+export function staffShiftAlreadyDeleted(shiftDisplayId: string): string {
+  return `${shiftDisplayId} 已刪除過`;
+}
+
+const STAFF_STATUS_LABEL: Record<string, string> = {
+  pending: '申請中',
+  active: '啟用',
+  disabled: '停用',
+};
+
+export function staffEmployeeList(
+  rows: { displayId: string; name: string; status: string; currentWage: number | null }[],
+): string[] {
+  if (rows.length === 0) return [staffTexts.noEmployees];
+  return [
+    '員工列表',
+    ...rows.map(
+      (r) =>
+        `${r.displayId} ${r.name}｜${STAFF_STATUS_LABEL[r.status] ?? r.status}｜${
+          r.currentWage !== null ? staffMoney(r.currentWage) : '未設定時薪'
+        }`,
+    ),
+  ];
+}
+
+export interface StaffPendingView {
+  registrations: { displayId: string; name: string }[];
+  corrections: { displayId: string; name: string; at: string; kind: PunchKind }[];
+  openShifts: {
+    shiftDisplayId: string;
+    employeeDisplayId: string;
+    name: string;
+    startAt: string;
+    overdue: boolean;
+  }[];
+}
+
+export function staffPendingList(p: StaffPendingView): string[] {
+  const lines: string[] = [];
+  if (p.registrations.length > 0) {
+    lines.push('註冊申請：');
+    for (const r of p.registrations) lines.push(`${r.displayId} ${r.name}`);
+  }
+  if (p.corrections.length > 0) {
+    lines.push('補卡申請：');
+    for (const c of p.corrections) {
+      lines.push(`${c.displayId} ${c.name} ${staffCorrectionWhat(c.at, c.kind)}`);
+    }
+  }
+  if (p.openShifts.length > 0) {
+    lines.push('未下班：');
+    for (const s of p.openShifts) {
+      const mark = s.overdue ? '（超過上限，需補卡）' : '（上班中）';
+      lines.push(
+        `${s.employeeDisplayId} ${s.name} ${s.shiftDisplayId} ${staffDayTime(s.startAt)} 上班${mark}`,
+      );
+    }
+  }
+  return lines.length === 0 ? [staffTexts.noPending] : lines;
+}
+
+/** One shift line: `11/3 09:02–18:05｜9 小時 3 分`, open → `11/12 09:02–未下班`. */
+function staffShiftLine(s: ShiftDetail, showId: boolean): string {
+  const id = showId ? `${s.displayId} ` : '';
+  const start = `${staffDay(s.date)} ${staffTime(s.startAt)}`;
+  if (!s.endAt || s.minutes === null) return `${id}${start}–未下班`;
+  const nextDay = taipeiDate(new Date(s.endAt)) !== s.date ? '（隔日）' : '';
+  return `${id}${start}–${staffTime(s.endAt)}${nextDay}｜${staffDuration(s.minutes)}`;
+}
+
+/** `我的打卡` (showIds false) and admin `打卡紀錄` (showIds true). Returns lines. */
+export function staffShiftRecords(
+  header: string,
+  shifts: ShiftDetail[],
+  showIds: boolean,
+): string[] {
+  if (shifts.length === 0) return [`${header}：沒有打卡紀錄`];
+  const done = shifts.filter((s) => s.minutes !== null);
+  const minutes = done.reduce((n, s) => n + (s.minutes ?? 0), 0);
+  return [
+    header,
+    ...shifts.map((s) => staffShiftLine(s, showIds)),
+    `合計 ${done.length} 班｜${staffDuration(minutes)}`,
+  ];
+}
+export function staffMyShiftsHeader(month: Month, name: string): string {
+  return `${month} 打卡紀錄（${name}）`;
+}
+export function staffShiftRecordsHeader(displayId: string, name: string, month: Month): string {
+  return `${displayId} ${name} ${month} 打卡紀錄`;
+}
+
+/** `刪除打卡 E001 11/12` listing. */
+export function staffShiftsOnDay(
+  displayId: string,
+  name: string,
+  date: LocalDate,
+  shifts: ShiftDetail[],
+): string[] {
+  const head = `${displayId} ${name} ${staffDay(date)}`;
+  if (shifts.length === 0) return [`${head} 沒有打卡紀錄`];
+  return [
+    `${head} 的打卡：`,
+    ...shifts.map((s) => staffShiftLine(s, true)),
+    `刪除請回：刪除 ${shifts[0]!.displayId}`,
+  ];
+}
+
+// --- §8 payroll ---
+
+/** Employee pay message (monthly DM and `我的薪資`). `current`: the month is still running. */
+export function staffPayMessage(
+  line: PayrollEmployeeLine,
+  month: Month,
+  payday: number,
+  current: boolean,
+): string {
+  const lines = [
+    `${month} ${current ? '目前累計' : '薪資'}（${staffPayday(month, payday)} 發薪）`,
+    `${line.name}｜${line.shiftCount} 班｜${staffDuration(line.totalMinutes)}`,
+    `應發 ${staffMoney(line.pay)}`,
+  ];
+  for (const r of line.rates) {
+    lines.push(`時薪 ${staffMoney(r.hourlyWage)}：${r.shiftCount} 班，${staffDuration(r.minutes)}`);
+  }
+  if (line.openShifts.length > 0) {
+    lines.push(`另有 ${line.openShifts.length} 班未下班，未計入，請用補卡補下班時間`);
+  }
+  if (line.unpricedShifts.length > 0) {
+    lines.push(`另有 ${line.unpricedShifts.length} 班沒有時薪，未計入，請聯絡管理員`);
+  }
+  lines.push(`明細請輸入：我的打卡 ${month}`);
+  return lines.join('\n');
+}
+
+/**
+ * Admin payroll summary as lines (the caller packs them into LINE messages). `notNotified`:
+ * employee ids whose DM could not be delivered (「未加好友，未通知」).
+ */
+export function staffPayrollSummary(
+  result: PayrollResult,
+  payday: number,
+  notNotified: ReadonlySet<number> = new Set(),
+): string[] {
+  const { month } = result;
+  const lines = [`${month} 薪資結算（${staffPayday(month, payday)} 發薪）`];
+  if (result.employees.length === 0) lines.push('沒有員工資料');
+  for (const e of result.employees) {
+    const disabled = e.status === 'disabled' ? '（已停用）' : '';
+    const unsent = notNotified.has(e.employeeId) ? '｜未加好友，未通知' : '';
+    lines.push(
+      `${e.displayId} ${e.name}${disabled}｜${e.shiftCount} 班｜${staffDuration(e.totalMinutes)}｜${staffMoney(e.pay)}${unsent}`,
+    );
+  }
+  lines.push(
+    `合計｜${result.totals.shiftCount} 班｜${staffDuration(result.totals.totalMinutes)}｜${staffMoney(result.totals.pay)}`,
+  );
+
+  const flags: string[] = [];
+  for (const e of result.employees) {
+    for (const d of e.longDays) {
+      flags.push(
+        `${e.displayId} ${e.name} ${staffDay(d.date)} 超過 8 小時（${staffDuration(d.minutes)}）`,
+      );
+    }
+    for (const w of e.longWeeks) {
+      flags.push(
+        `${e.displayId} ${e.name} ${staffDay(w.weekStart)}–${staffDay(w.weekEnd)} 週超過 40 小時（${staffDuration(w.minutes)}）`,
+      );
+    }
+  }
+  if (flags.length > 0) lines.push('工時標註（不另計加班費）：', ...flags);
+
+  if (result.hasPending) {
+    lines.push('待處理：');
+    for (const e of result.employees) {
+      for (const s of e.openShifts) {
+        lines.push(
+          `未下班 ${e.displayId} ${e.name} ${s.displayId} ${staffDayTime(s.startAt)} 上班`,
+        );
+      }
+      for (const s of e.unpricedShifts) {
+        lines.push(`沒有時薪 ${e.displayId} ${e.name} ${s.displayId} ${staffDay(s.date)}`);
+      }
+    }
+    for (const c of result.pending.corrections) {
+      lines.push(`補卡申請 ${c.displayId} ${c.name} ${staffCorrectionWhat(c.at, c.kind)}`);
+    }
+    for (const r of result.pending.registrations) {
+      lines.push(`註冊申請 ${r.displayId} ${r.name}`);
+    }
+    lines.push(`處理後可輸入：結算 ${month} 重新結算`);
+  }
+  return lines;
 }

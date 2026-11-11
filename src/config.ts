@@ -138,6 +138,8 @@ export const configSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().min(0).max(23).default(9),
   ),
+  /** Day (1–28) of the following month when pay is issued; only used in notices. */
+  STAFF_PAYDAY: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(28).default(15)),
 });
 
 /**

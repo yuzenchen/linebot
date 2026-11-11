@@ -1,3 +1,4 @@
+import type { Database } from 'better-sqlite3';
 import type { Hono } from 'hono';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
@@ -10,9 +11,11 @@ import type { Replier } from '../line/replier.js';
 
 export type ProfileName = Config['BOT_PROFILE'];
 
-/** Infrastructure both profiles share; built once in `server.ts` `main()`. */
+/** Infrastructure every profile shares; built once in `server.ts` `main()`. */
 export interface Shared {
   config: Config;
+  /** The SQLite connection behind `repos` (the staff profile builds its own service on it). */
+  db: Database;
   repos: Repos;
   replier: Replier;
   jobs: JobQueue;
@@ -26,7 +29,7 @@ export interface BotProfile {
   name: ProfileName;
   /** Text-message handler passed to the dispatcher. Must never reject. */
   handleText: (ctx: TextMessageContext) => Promise<void>;
-  /** Group / room text handler (admin only, SPEC-ADMIN §13); absent → groups are ignored. Must never reject. */
+  /** Group / room text handler (admin: SPEC-ADMIN §13; staff: SPEC-STAFF §4–6); absent → groups are ignored. Must never reject. */
   handleGroupText?: (ctx: GroupTextContext) => Promise<void>;
   /** Reply sent on `follow`. */
   welcomeText: () => string;

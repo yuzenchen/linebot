@@ -9,7 +9,7 @@ import { closeDb, getDb } from './db/index.js';
 import { createRepos, type Repos } from './db/repos.js';
 import { createDispatcher } from './handlers/dispatcher.js';
 import type { GrokCallbackDeps } from './grok/callback.js';
-import { callbackUrlFor, createGrokGateway } from './grok/gateway.js';
+import { callbackUrlFor, createGrokGateway, NullGrokGateway } from './grok/gateway.js';
 import { createHealthChecker } from './health/check.js';
 import { JobQueue } from './jobs/queue.js';
 import { createLineClient } from './line/client.js';
@@ -34,6 +34,11 @@ export interface AppDeps {
   extraRoutes?: (app: Hono) => void;
   /** Reported by `/health`; `main()` passes `config.BOT_PROFILE`. */
   profile?: string;
+  /**
+   * Mount the `/grok/callback` 503 fallback (default true). The staff bot passes false so the
+   * route does not exist at all (404).
+   */
+  grokCallbackFallback?: boolean;
 }
 
 /**
@@ -52,7 +57,9 @@ export function createApp(deps?: AppDeps): Hono {
     app.route('/webhook', createWebhookRoute(deps));
     deps.extraRoutes?.(app);
     if (deps.grokCallback) mountGrokCallback(app, deps.grokCallback);
-    app.post('/grok/callback', (c) => c.json({ error: 'callback not configured' }, 503));
+    if (deps.grokCallbackFallback !== false) {
+      app.post('/grok/callback', (c) => c.json({ error: 'callback not configured' }, 503));
+    }
   } else {
     app.post('/webhook', (c) => c.json({ error: 'not configured' }, 503));
     app.post('/grok/callback', (c) => c.json({ error: 'not configured' }, 503));
@@ -71,8 +78,10 @@ function main(): void {
     cacheMs: config.HEALTH_CACHE_MS,
   });
   const jobs = new JobQueue(repos.jobs, { maxAttempts: JOB_MAX_ATTEMPTS });
-  const grok = createGrokGateway(config, logger);
-  const shared: Shared = { config, repos, replier, jobs, grok, health, logger };
+  // The staff bot never talks to Grok: force the Null gateway so stray GROK_* env is inert.
+  const isStaff = config.BOT_PROFILE === 'staff';
+  const grok = isStaff ? new NullGrokGateway() : createGrokGateway(config, logger);
+  const shared: Shared = { config, db, repos, replier, jobs, grok, health, logger };
   const profile = createProfile(config.BOT_PROFILE, shared);
   const dispatch = createDispatcher({
     repos,
@@ -87,8 +96,10 @@ function main(): void {
     dispatch,
     extraRoutes: profile.extraRoutes,
     profile: profile.name,
+    grokCallbackFallback: !isStaff,
   });
-  const callbackUrl = config.PUBLIC_BASE_URL ? callbackUrlFor(config.PUBLIC_BASE_URL) : undefined;
+  const callbackUrl =
+    config.PUBLIC_BASE_URL && !isStaff ? callbackUrlFor(config.PUBLIC_BASE_URL) : undefined;
   const server = serve({ fetch: app.fetch, port: config.PORT, hostname: '0.0.0.0' }, (info) => {
     logger.info(
       { port: info.port, profile: profile.name, grokConfigured: grok.configured, callbackUrl },

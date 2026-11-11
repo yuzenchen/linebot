@@ -31,6 +31,21 @@
 #     （tunnel 網路別名 linebot-admin），WAF 同樣放行 /webhook 與 /grok/callback；
 #     管理端 LINE channel 的 webhook URL 填 https://linebot-admin.yuzen.tw/webhook。
 #   - 改 .env.admin 後：docker compose -f docker-compose.pi.yml up -d --force-recreate linebot-admin
+#
+# 員工打卡（第三個容器 linebot-staff，SPEC-STAFF 第 2 節）：
+#   - 同一個 image，BOT_PROFILE=staff。掛在 compose profile「staff」下，要起它用：
+#       docker compose -f docker-compose.pi.yml --profile staff up -d --build
+#     （可與 --profile admin 一起寫；.env.staff 還沒建好之前不要加 --profile staff）。
+#   - 設定讀 .env.staff：複製 .env.example 後改 BOT_PROFILE=staff、填「員工」LINE channel 的
+#     LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN 與 STAFF_ADMIN_USER_IDS（staff 缺這些會啟動失敗）；
+#     不需要 eshop、ANTHROPIC_API_KEY、Grok 設定。STAFF_GROUP_IDS 先留空，bot 進群組後從 log 取得再填。
+#   - 資料獨立：SQLite 落在 ./data-staff（bind mount 到容器 /data）；首次啟動前 `mkdir -p data-staff`。
+#     出勤與薪資紀錄依勞基法須保存 5 年，data-staff 一定要納入備份（方式同上）。
+#   - 容器內仍聽 8090，host 端對應 8092（只給家用網路 curl http://<Pi 的 IP>:8092/health）。
+#   - Cloudflare Zero Trust 多加一個 Public Hostname：linebot-staff.yuzen.tw → http://linebot-staff:8090
+#     （tunnel 網路別名 linebot-staff），WAF Skip 規則同樣放行 /webhook（staff 沒有 /grok/callback）；
+#     員工 LINE channel 的 webhook URL 填 https://linebot-staff.yuzen.tw/webhook。
+#   - 改 .env.staff 後：docker compose -f docker-compose.pi.yml up -d --force-recreate linebot-staff
 services:
   linebot:
     container_name: linebot
@@ -93,6 +108,38 @@ services:
       default:
       tunnel:
         aliases: [linebot-admin]
+
+  linebot-staff:
+    container_name: linebot-staff
+    build: .
+    profiles: ['staff']
+    ports:
+      - '8092:8090'
+    env_file: .env.staff
+    environment:
+      # 容器內固定用 /data（對應 Pi 上的 ./data-staff）；port 仍是 8090，只有 host 端映射到 8092
+      BOT_PROFILE: staff
+      DATA_DIR: /data
+    volumes:
+      - ./data-staff:/data
+    restart: unless-stopped
+    mem_limit: 256m
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      default:
+      tunnel:
+        aliases: [linebot-staff]
 
 networks:
   tunnel:

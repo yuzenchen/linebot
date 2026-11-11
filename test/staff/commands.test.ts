@@ -165,6 +165,12 @@ describe('parseStaffCommand: admin commands', () => {
       month: '2026-11',
       notifyEmployees: true,
     });
+    expect(p('結算 2026-11 重新結算')).toEqual({
+      type: 'runPayroll',
+      month: '2026-11',
+      notifyEmployees: false,
+    });
+    expect(p('結算 2026-11 其他')).toEqual({ type: 'malformed', keyword: '結算' });
     expect(p('結算')).toEqual({ type: 'malformed', keyword: '結算' });
     expect(p('員工列表 全部')).toEqual({ type: 'malformed', keyword: '員工列表' });
   });

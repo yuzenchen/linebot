@@ -167,7 +167,7 @@
 
 - 管理員：使用者本人與店家老闆，userId 只放 Pi `.env.staff` 的 `STAFF_ADMIN_USER_IDS`。
 - 打卡群組：開新群組。bot 加入後從 log 取得 groupId，填入 `STAFF_GROUP_IDS`。
-- 員工 channel：使用者在 LINE Developers 新開（照 `docs/LINE-SETUP.md` 第 8 節流程，另需打開「Allow bot to join group chats」），完成後提供金鑰；在那之前只做程式與測試，不部署。
+- 員工 channel：使用者在 LINE Developers 新開（照 `docs/LINE-SETUP.md` 第 9 節流程，另需打開「Allow bot to join group chats」），完成後提供金鑰；在那之前只做程式與測試，不部署。
 
 ## 14. 完成定義
 

@@ -299,7 +299,10 @@ export function parseStaffCommand(text: string, now: Date): StaffCommand | null 
     case '結算': {
       const month = args[0] ? parseMonthToken(args[0]) : null;
       if (!month) return malformed;
-      if (args.length === 1) return { type: 'runPayroll', month, notifyEmployees: false };
+      // `結算 2026-11 重新結算` is how the summary words its hint (§8); same as `結算 2026-11`.
+      if (args.length === 1 || (args.length === 2 && args[1] === '重新結算')) {
+        return { type: 'runPayroll', month, notifyEmployees: false };
+      }
       if (args.length === 2 && args[1] === '通知員工') {
         return { type: 'runPayroll', month, notifyEmployees: true };
       }
