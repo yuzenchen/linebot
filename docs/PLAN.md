@@ -164,3 +164,19 @@ Pi 兩個容器更新、`.env.admin` 加 `ENDUSER_INTERNAL_URL`、CURSOR-AUTOMAT
 - [ ] 狀態
 
 規格見 `docs/SPEC-ADMIN.md` 第 15 節。`admin/tools.ts` 新增唯讀工具 `revenue`（`dateFrom`、`dateTo` 必填含 +08:00、`orderType` 可 null）：`listOrders` 帶 `paymentStatus=paid`、每頁 100 筆逐頁抓到底，排除已取消、缺金額另計，回 `revenue`、`orders`、`byPaymentMethod`、`excludedCancelled`、`missingAmount`、`basis`；區間超過 366 天或超過 20 頁回「區間太長或訂單太多，請縮小區間」，不回部分加總；私訊與群組子集都提供。prompt：今天、本月營收仍用 `stats`，其他區間用 `revenue`，回覆附口徑說明。測試：多頁加總、排除已取消、缺金額、付款方式分組、orderType 與 paymentStatus 參數、超過 20 頁 / 366 天 / 起訖顛倒 / 格式錯誤、eshop 錯誤、群組可用。上線前依 §15.4 比對本月口徑並記入 `docs/VERIFY.md`。
+
+---
+
+# 第四批：員工打卡與薪資 bot（規格見 `docs/SPEC-STAFF.md`，2026-11-12 定案）
+
+## T20 staff 資料層與薪資計算（Careful）— 依賴：無
+
+- [ ] 狀態
+
+`config.ts` 加 `BOT_PROFILE=staff` 與 SPEC-STAFF §12 的變數（staff 時 `STAFF_ADMIN_USER_IDS` 必填、不需要 eshop / Anthropic 金鑰）；migration 008 建 §10 的表；`src/staff/` 下的 repo 與純函式：員工編號 E001 / 補卡 R001 / 班 S0001、打卡狀態機（§5，含 16 小時上限與 60 秒重送）、補卡套用與重疊檢查（§6）、時薪生效日查詢、月結計算（§7–8：分鐘、整月四捨五入、8 小時與週 40 小時標註、未下班列待處理）、指令解析（§4–6、§9 的全部指令格式與日期解析）。全部附單元測試，不接 LINE。
+
+## T21 staff bot 指令、月結排程與部署設定（Careful）— 依賴：T20
+
+- [ ] 狀態
+
+`src/profiles/staff.ts` 與 handler：群組（只在 `STAFF_GROUP_IDS`，未列群組記 groupId）處理註冊、上班、下班、補卡；私訊處理員工與管理員指令（§9）、管理員通知、核准結果通知；文案集中 `texts.ts`；每月 1 日 `STAFF_PAYROLL_CRON_HOUR` 自動月結與 `結算` 指令（§8，寫 `payroll_runs`、管理員總表、員工私訊、未加好友標註）；`audit_log`。`docker-compose.pi.yml` 加 `linebot-staff`（profile `staff`、8092、`./data-staff`、`.env.staff`）、`.env.example`、`docs/LINE-SETUP.md` 員工帳號段落、README、filemap。整合測試用 mock LINE client 與臨時 SQLite。
