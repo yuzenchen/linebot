@@ -88,6 +88,42 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...required, ADMIN_USER_IDS: 'Ua' }).ADMIN_USER_IDS).toEqual(['Ua']);
   });
 
+  it('defaults the staff settings and keeps them optional for other profiles', () => {
+    const cfg = loadConfig({ ...required });
+    expect(cfg.STAFF_ADMIN_USER_IDS).toEqual([]);
+    expect(cfg.STAFF_GROUP_IDS).toEqual([]);
+    expect(cfg.STAFF_MIN_HOURLY_WAGE).toBe(196);
+    expect(cfg.STAFF_MAX_SHIFT_HOURS).toBe(16);
+    expect(cfg.STAFF_PAYROLL_CRON_HOUR).toBe(9);
+  });
+
+  it('requires only STAFF_ADMIN_USER_IDS when BOT_PROFILE=staff', () => {
+    const staff = { ...required, BOT_PROFILE: 'staff' };
+    expect(() => loadConfig(staff)).toThrow(/STAFF_ADMIN_USER_IDS/);
+    expect(() => loadConfig({ ...staff, STAFF_ADMIN_USER_IDS: ' , ' })).toThrow(
+      /STAFF_ADMIN_USER_IDS/,
+    );
+    // No eshop / Anthropic / Grok / enduser settings needed.
+    const cfg = loadConfig({
+      ...staff,
+      STAFF_ADMIN_USER_IDS: 'Ua, Ub',
+      STAFF_GROUP_IDS: 'Cg1,,Cg2 ',
+      STAFF_MIN_HOURLY_WAGE: '200',
+      STAFF_MAX_SHIFT_HOURS: '12',
+      STAFF_PAYROLL_CRON_HOUR: '0',
+    });
+    expect(cfg.BOT_PROFILE).toBe('staff');
+    expect(cfg.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(cfg.STAFF_ADMIN_USER_IDS).toEqual(['Ua', 'Ub']);
+    expect(cfg.STAFF_GROUP_IDS).toEqual(['Cg1', 'Cg2']);
+    expect(cfg.STAFF_MIN_HOURLY_WAGE).toBe(200);
+    expect(cfg.STAFF_MAX_SHIFT_HOURS).toBe(12);
+    expect(cfg.STAFF_PAYROLL_CRON_HOUR).toBe(0);
+    expect(() =>
+      loadConfig({ ...staff, STAFF_ADMIN_USER_IDS: 'Ua', STAFF_PAYROLL_CRON_HOUR: '24' }),
+    ).toThrow(/STAFF_PAYROLL_CRON_HOUR/);
+  });
+
   it('lists every invalid field', () => {
     expect(() => loadConfig({ PORT: 'abc' })).toThrow(
       /PORT[\s\S]*LINE_CHANNEL_SECRET[\s\S]*LINE_CHANNEL_ACCESS_TOKEN/,

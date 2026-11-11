@@ -83,6 +83,15 @@
 - `src/tickets/` — T15 客戶端工單
 - `src/db/bugReports.ts` — `createBugReportsRepo(db)`：SPEC-ADMIN §13 群組回報的網站 bug（`insert` / `get` / `findRecentDuplicate` / `setStatus` / `setGrokTask`），migration 006
 - `src/bugs/ids.ts` — `displayBugId(1)` → `B001`
+- `src/staff/` — T20 員工打卡與薪資的資料層與計算（SPEC-STAFF；尚未接 LINE，T21 接 profile / 文案 / 排程）；表在 migration 008（employees、wage_rates、shifts、correction_requests、payroll_runs、audit_log）
+- `src/staff/time.ts` — 台北時區（固定 +08:00，與主機 TZ 無關）日期工具：`taipeiDate` / `taipeiMonth` / `taipeiTime` / `taipeiInstant`、`addDays`、`weekStart`（週一）、`monthBounds`、`previousMonth`、`splitMinutes`
+- `src/staff/ids.ts` — `displayEmployeeId(1)` → `E001`、`displayCorrectionId` → `R001`、`displayShiftId` → `S0001` 與對應 `parse*Id`
+- `src/staff/commands.ts` — `parseStaffCommand(text, now)`：§4–6、§9 全部指令 → `StaffCommand` 判別聯集（非指令回 null、已知關鍵字但參數錯回 `malformed`）；上班 / 下班需 trim 後完全相同；日期 `11/12`、`2026/11/12`（補卡 / 刪除打卡取最近不在未來的年份，`自` 日期取最接近今天的年份可在未來）、月份 `2026-11`；全形數字與冒號可用
+- `src/staff/repo.ts` — `createStaffRepo(db)`：六張表的 prepared statements 與 row 型別（每個寫入都帶 `now`）
+- `src/staff/punch.ts` — `decidePunch()`：§5 打卡狀態機純函式（已在上班、無上班、超過 `STAFF_MAX_SHIFT_HOURS` 標記未下班、60 秒重送）
+- `src/staff/corrections.ts` — `planCorrection()`：§6 補卡套用規則純函式（上班配對待處理的下班補卡或同日已完成的班、下班結束最近未下班的班、重疊與時數上限檢查）
+- `src/staff/payroll.ts` — `calculatePayroll()` / `calculateEmployeeLine()`：§7–8 月結純函式（依上班日歸月、各班套當日時薪、整月加總後四捨五入、8 小時 / 週 40 小時標註、未下班與無時薪的班列待處理）；`payrollShiftWindow()`、`wageOn()`、`shiftDetail()`
+- `src/staff/service.ts` — `createStaffService(db, { minHourlyWage, maxShiftHours })`：註冊 / 核准 / 駁回、打卡、補卡申請與核准 / 駁回 / 代補、時薪、員工列表、待處理、刪除打卡（軟刪除）、停用 / 啟用、打卡紀錄、`我的打卡`、結算（`computePayroll` / `runPayroll` 寫 `payroll_runs`）；全部吃 `now`、回傳型別化結果（不呼叫 LINE、不含文案），多筆寫入用 transaction，管理員操作寫 `audit_log`
 - `src/tickets/ids.ts` — `displayId(42)` → `T042`、`parseTicketId('T42' | 't042' | '42')`
 - `src/tickets/orderIds.ts` — `extractOrderIds(text)`：抓 `#YYYYMMDD-XXXXXXXX`（可帶 D / G 前綴）並正規化
 - `src/tickets/service.ts` — `createTicketService()`：`open()` 開單或附加 + 管理端通知（`[待回覆 T042]` / `[T042 追問]`，通知文字在 `texts.ts`）、`notifyFollowUp()`；jobs/handlers、grok callback、sweeper、handoff、message.ts 的開單點都經由它
@@ -97,6 +106,7 @@
 - `src/cli/bootstrap.ts` — CLI 共用：讀 `.env`、開 `DATA_DIR` 的 DB、補 LINE 佔位值（logger 需要）
 - `test/` — vitest 測試
 - `test/db/` — migrations 與 repository 測試（in-memory SQLite）；`grokTasks.test.ts` 測 grok_tasks repo；`adminQueries.test.ts` 測 admin_queries repo；`bugReports.test.ts` 測 bug_reports repo 與 `displayBugId`
+- `test/staff/` — T20：`helpers.ts`（臨時 SQLite + service、`tp()` 台北時間、`hire()`、`addShift()`）、`time.test.ts`（時區與編號）、`commands.test.ts`（指令與年份推斷）、`punch.test.ts`（§5）、`corrections.test.ts`（§6 純函式與核准流程）、`admin.test.ts`（§4 註冊、時薪、管理操作與 audit）、`payroll.test.ts`（§7–8 月結）；以 `TZ=UTC` 執行也須通過
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
 - `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`deferral.test.ts`（轉人工文字偵測）、`sweeper.test.ts`（逾時處理）

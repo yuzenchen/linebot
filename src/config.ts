@@ -8,6 +8,19 @@ const requiredString = z.preprocess(emptyToUndefined, z.string({ error: 'is requ
 const stringWithDefault = (def: string) => z.preprocess(emptyToUndefined, z.string().default(def));
 const intWithDefault = (def: number) =>
   z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(def));
+/** Comma-separated list → trimmed, non-empty entries (unset / empty → `[]`). */
+const csvList = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .optional()
+    .transform((s) =>
+      (s ?? '')
+        .split(',')
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0),
+    ),
+);
 
 export const configSchema = z.object({
   PORT: intWithDefault(8090),
@@ -45,8 +58,12 @@ export const configSchema = z.object({
   GROK_TASK_TIMEOUT_MS: intWithDefault(900000),
   TZ: stringWithDefault('Asia/Taipei'),
 
-  // --- Bot profile (T10). `enduser` is the customer-facing bot; `admin` the internal one. ---
-  BOT_PROFILE: z.preprocess(emptyToUndefined, z.enum(['enduser', 'admin']).default('enduser')),
+  // --- Bot profile (T10). `enduser` is the customer-facing bot; `admin` the internal one;
+  // `staff` the employee punch-clock / payroll bot (SPEC-STAFF). ---
+  BOT_PROFILE: z.preprocess(
+    emptyToUndefined,
+    z.enum(['enduser', 'admin', 'staff']).default('enduser'),
+  ),
   /** Comma-separated LINE userIds allowed to talk to the admin bot. */
   ADMIN_USER_IDS: z.preprocess(
     emptyToUndefined,
@@ -106,13 +123,29 @@ export const configSchema = z.object({
   GROK_BUG_TIMEOUT_MS: intWithDefault(86400000),
   /** How long after a `bug_report` task was created follow-up callbacks are still DMed (§13.4; default 30 d). */
   GROK_BUG_FOLLOWUP_WINDOW_MS: intWithDefault(2592000000),
+
+  // --- Staff bot (SPEC-STAFF §12). ---
+  /** Comma-separated admin userIds of the staff bot; at least one when BOT_PROFILE=staff. */
+  STAFF_ADMIN_USER_IDS: csvList,
+  /** Comma-separated punch-clock groupIds; empty = group features off (groupIds only logged). */
+  STAFF_GROUP_IDS: csvList,
+  /** Setting a wage below this (NT$/hour) warns but is still allowed. */
+  STAFF_MIN_HOURLY_WAGE: intWithDefault(196),
+  /** An open shift older than this cannot be closed by `下班` (needs a correction). */
+  STAFF_MAX_SHIFT_HOURS: intWithDefault(16),
+  /** Taipei hour (0–23) on the 1st of each month when last month's payroll runs. */
+  STAFF_PAYROLL_CRON_HOUR: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(0).max(23).default(9),
+  ),
 });
 
 /**
  * Cross-field rules:
  * - a configured Grok webhook needs a callback URL and token;
  * - the admin profile needs an allowlist, eshop bot credentials, an Anthropic key and the
- *   enduser bot's internal URL.
+ *   enduser bot's internal URL;
+ * - the staff profile needs its own admin allowlist (nothing eshop / Anthropic / Grok related).
  */
 const validatedConfigSchema = configSchema.superRefine((c, ctx) => {
   if (c.GROK_WEBHOOK_URL) {
@@ -148,6 +181,13 @@ const validatedConfigSchema = configSchema.superRefine((c, ctx) => {
         });
       }
     }
+  }
+  if (c.BOT_PROFILE === 'staff' && c.STAFF_ADMIN_USER_IDS.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['STAFF_ADMIN_USER_IDS'],
+      message: 'must list at least one LINE userId when BOT_PROFILE=staff',
+    });
   }
 });
 

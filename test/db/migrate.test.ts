@@ -17,6 +17,12 @@ const expectedTables = [
   'pending_confirmations',
   'bug_reports',
   'group_context',
+  'employees',
+  'wage_rates',
+  'shifts',
+  'correction_requests',
+  'payroll_runs',
+  'audit_log',
   'schema_migrations',
 ];
 
@@ -38,6 +44,7 @@ describe('runMigrations', () => {
       { version: 5, name: '005_pending_confirmations' },
       { version: 6, name: '006_bug_reports' },
       { version: 7, name: '007_group_context' },
+      { version: 8, name: '008_staff' },
     ]);
   });
 
@@ -58,6 +65,14 @@ describe('runMigrations', () => {
         'idx_tickets_status_updated',
         'idx_bug_reports_reporter_created',
         'idx_group_context_group',
+        'idx_employees_status',
+        'idx_wage_rates_employee_from',
+        'idx_shifts_employee_start',
+        'idx_shifts_start',
+        'idx_correction_requests_status',
+        'idx_correction_requests_employee',
+        'idx_payroll_runs_month',
+        'idx_audit_log_created',
       ]),
     );
   });

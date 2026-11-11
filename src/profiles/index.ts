@@ -11,5 +11,8 @@ export function createProfile(name: ProfileName, shared: Shared): BotProfile {
       return createAdminProfile(shared);
     case 'enduser':
       return createEnduserProfile(shared);
+    case 'staff':
+      // Placeholder until T21 adds `src/profiles/staff.ts`.
+      throw new Error('BOT_PROFILE=staff is not implemented yet (T21)');
   }
 }

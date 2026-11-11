@@ -189,6 +189,87 @@ CREATE TABLE IF NOT EXISTS group_context (
 CREATE INDEX IF NOT EXISTS idx_group_context_group ON group_context (group_id, id);
 `;
 
+/**
+ * SPEC-STAFF §10: punch clock and payroll. Created in every profile's DB, used only by `staff`.
+ * Timestamps are ISO-8601 UTC; `effective_from` is a Taipei calendar date (`YYYY-MM-DD`).
+ * Nothing here is physically deleted except rejected registrations (shifts are soft-deleted).
+ */
+const staff = `
+CREATE TABLE IF NOT EXISTS employees (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'disabled')),
+  group_id TEXT,
+  created_at TEXT,
+  approved_at TEXT,
+  approved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_employees_status ON employees (status);
+
+CREATE TABLE IF NOT EXISTS wage_rates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees (id),
+  hourly_wage INTEGER NOT NULL,
+  effective_from TEXT NOT NULL,
+  created_by TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wage_rates_employee_from ON wage_rates (employee_id, effective_from);
+
+CREATE TABLE IF NOT EXISTS shifts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees (id),
+  start_at TEXT NOT NULL,
+  end_at TEXT,
+  start_source TEXT NOT NULL CHECK (start_source IN ('punch', 'correction', 'admin')),
+  end_source TEXT CHECK (end_source IN ('punch', 'correction', 'admin')),
+  overdue INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT,
+  deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts (employee_id, start_at);
+CREATE INDEX IF NOT EXISTS idx_shifts_start ON shifts (start_at);
+
+CREATE TABLE IF NOT EXISTS correction_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees (id),
+  kind TEXT NOT NULL CHECK (kind IN ('in', 'out')),
+  at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'failed')) DEFAULT 'pending',
+  reason TEXT,
+  requested_by TEXT,
+  group_id TEXT,
+  shift_id INTEGER,
+  created_at TEXT,
+  decided_by TEXT,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_correction_requests_status ON correction_requests (status, id);
+CREATE INDEX IF NOT EXISTS idx_correction_requests_employee ON correction_requests (employee_id, status);
+
+CREATE TABLE IF NOT EXISTS payroll_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  month TEXT NOT NULL,
+  run_at TEXT,
+  triggered_by TEXT,
+  result_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_runs_month ON payroll_runs (month, id);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT,
+  before_json TEXT,
+  after_json TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log (created_at);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
@@ -197,4 +278,5 @@ export const migrations: Migration[] = [
   { version: 5, name: '005_pending_confirmations', sql: pendingConfirmations },
   { version: 6, name: '006_bug_reports', sql: bugReports },
   { version: 7, name: '007_group_context', sql: groupContext },
+  { version: 8, name: '008_staff', sql: staff },
 ];
