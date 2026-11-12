@@ -1,14 +1,20 @@
 /**
- * Staff bot service layer (SPEC-STAFF §4–8): registration, punches, corrections, wages, admin
- * operations and payroll. Every method takes `now` and returns a typed outcome — no LINE calls
- * and no user-facing text; the profile (T21) maps outcomes to `texts.ts` and notifications.
+ * Staff bot service layer (SPEC-STAFF §4–8, §15): registration, punches, corrections (one punch
+ * or a whole shift, cancel), wages, admin operations (incl. 修改 S0123) and payroll. Every method
+ * takes `now` and returns a typed outcome — no LINE calls and no user-facing text; the profile
+ * (T21) maps outcomes to `texts.ts` and notifications.
  *
  * Multi-row changes run in one SQLite transaction. Every admin operation writes `audit_log`
- * (actor, action, target display id, before / after JSON).
+ * (actor, action, target display id, before / after JSON); so does an employee's 取消.
  */
 import type { Database } from 'better-sqlite3';
 import type { PunchKind } from './commands.js';
-import { type CorrectionFailureReason, planCorrection } from './corrections.js';
+import {
+  type CorrectionFailureReason,
+  findShiftConflict,
+  planCorrection,
+  type PlanShift,
+} from './corrections.js';
 import { displayCorrectionId, displayEmployeeId, displayShiftId } from './ids.js';
 import {
   calculateEmployeeLine,
@@ -30,7 +36,14 @@ import {
   type ShiftSource,
   type StaffRepo,
 } from './repo.js';
-import { addDays, type LocalDate, type Month, taipeiDate, taipeiInstant } from './time.js';
+import {
+  addDays,
+  type LocalDate,
+  type Month,
+  taipeiDate,
+  taipeiInstant,
+  taipeiMonth,
+} from './time.js';
 
 /** §6: corrections may go back this many Taipei calendar days (and never into the future). */
 export const CORRECTION_WINDOW_DAYS = 31;
@@ -86,14 +99,19 @@ export type PunchOutcome =
   | { kind: 'noOpenShift'; employee: EmployeeRow }
   | { kind: 'overdue'; employee: EmployeeRow; shift: ShiftRow };
 
-export interface CorrectionInput {
-  kind: PunchKind;
-  at: Date;
-}
+/** One punch, or (§15.4) a whole shift `at`–`endAt`. */
+export type CorrectionInput =
+  { kind: PunchKind; at: Date } | { kind: 'shift'; at: Date; endAt: Date };
 
-/** Validation shared by employee requests and admin 代補. */
+/**
+ * Validation shared by employee requests and admin 代補: nothing after now (a whole shift's end
+ * included), start at most 31 days back, and (whole shift only) no longer than
+ * STAFF_MAX_SHIFT_HOURS (`tooLong`).
+ */
 export type CorrectionWindowOutcome =
-  { kind: 'future'; employee: EmployeeRow } | { kind: 'tooOld'; employee: EmployeeRow };
+  | { kind: 'future'; employee: EmployeeRow }
+  | { kind: 'tooOld'; employee: EmployeeRow }
+  | { kind: 'tooLong'; employee: EmployeeRow };
 
 export type RequestCorrectionOutcome =
   | NotEmployeeOutcome
@@ -131,8 +149,16 @@ export type RejectCorrectionOutcome =
   | { kind: 'notFound' }
   | { kind: 'alreadyDecided'; request: CorrectionRow };
 
+export type CancelCorrectionOutcome =
+  /** `resent`: the same user cancelled it within the last 60 s (repeat the first answer). */
+  | { kind: 'cancelled'; request: CorrectionRow; employee: EmployeeRow; resent: boolean }
+  /** No such request, or it belongs to someone else. */
+  | { kind: 'notFound' }
+  | { kind: 'notPending'; request: CorrectionRow };
+
 export type AdminCorrectionOutcome =
-  | ({ kind: 'applied' } & CorrectionApplied)
+  /** `settledMonths`: months of the changed shift that already have a payroll run. */
+  | ({ kind: 'applied'; settledMonths: Month[] } & CorrectionApplied)
   | CorrectionFailure
   | CorrectionWindowOutcome
   | { kind: 'notFound' }
@@ -152,9 +178,46 @@ export type SetWageOutcome =
   | { kind: 'notApproved'; employee: EmployeeRow };
 
 export type DeleteShiftOutcome =
-  | { kind: 'deleted'; shift: ShiftRow; employee: EmployeeRow }
+  | { kind: 'deleted'; shift: ShiftRow; employee: EmployeeRow; settledMonths: Month[] }
   | { kind: 'notFound' }
   | { kind: 'alreadyDeleted'; shift: ShiftRow };
+
+/** §15.2 `修改 S0123 上班|下班 [date] HH:MM`; `date` null = default from the shift. */
+export interface EditShiftInput {
+  kind: PunchKind;
+  date: LocalDate | null;
+  hour: number;
+  minute: number;
+}
+
+/**
+ * Why an edit was refused (nothing written). `notAfterStart`: the edited shift would not start
+ * before it ends.
+ */
+export type EditShiftRefusal =
+  'notAfterStart' | 'exceedsMaxHours' | 'future' | 'tooOld' | 'overlap';
+
+export type EditShiftOutcome =
+  | {
+      kind: 'edited';
+      shift: ShiftRow;
+      before: ShiftRow;
+      employee: EmployeeRow;
+      /** Exact minutes, null while still open. */
+      minutes: number | null;
+      /** Months touched by the edit (before and after) that already have a payroll run. */
+      settledMonths: Month[];
+    }
+  | {
+      kind: 'refused';
+      reason: EditShiftRefusal;
+      shift: ShiftRow;
+      employee: EmployeeRow;
+      /** The other shift it would overlap (`overlap`). */
+      conflictShift: ShiftRow | null;
+    }
+  | { kind: 'notFound' }
+  | { kind: 'deleted'; shift: ShiftRow };
 
 export type SetStatusOutcome =
   | { kind: 'updated'; employee: EmployeeRow; previous: EmployeeStatus }
@@ -204,7 +267,21 @@ export interface PayrollRun {
 export const PAYROLL_SCHEDULE_ACTOR = 'schedule';
 
 function correctionView(r: CorrectionRow) {
-  return { id: displayCorrectionId(r.id), kind: r.kind, at: r.at, status: r.status };
+  return {
+    id: displayCorrectionId(r.id),
+    kind: r.kind,
+    at: r.at,
+    ...(r.end_at ? { end_at: r.end_at } : {}),
+    status: r.status,
+  };
+}
+
+function correctionEnd(c: CorrectionInput): Date | null {
+  return c.kind === 'shift' ? c.endAt : null;
+}
+
+function toPlanShift(s: ShiftRow): PlanShift {
+  return { id: s.id, startAt: new Date(s.start_at), endAt: s.end_at ? new Date(s.end_at) : null };
 }
 
 function shiftView(s: ShiftRow | undefined) {
@@ -255,6 +332,24 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
     return null;
   }
 
+  /** `checkWindow` plus the whole-shift end / length checks (§15.4). */
+  function checkRequest(
+    employee: EmployeeRow,
+    c: CorrectionInput,
+    now: Date,
+  ): CorrectionWindowOutcome | null {
+    const bad = checkWindow(employee, c.at, now);
+    if (bad || c.kind !== 'shift') return bad;
+    if (c.endAt.getTime() > now.getTime()) return { kind: 'future', employee };
+    if (c.endAt.getTime() - c.at.getTime() > maxShiftMs) return { kind: 'tooLong', employee };
+    return null;
+  }
+
+  /** Of `months`, those with at least one `payroll_runs` row (§15.2 settled hint), deduped. */
+  function settledMonths(months: Month[]): Month[] {
+    return [...new Set(months)].filter((m) => repo.payrollRuns.existsForMonth(m));
+  }
+
   /**
    * Applies a pending request (already validated) inside the caller's transaction and records the
    * decision. Returns the applied result or the failure.
@@ -277,11 +372,8 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
     const plan = planCorrection({
       kind: request.kind,
       at,
-      shifts: live.map((s) => ({
-        id: s.id,
-        startAt: new Date(s.start_at),
-        endAt: s.end_at ? new Date(s.end_at) : null,
-      })),
+      endAt: request.end_at ? new Date(request.end_at) : null,
+      shifts: live.map(toPlanShift),
       outRequests: outRequests.map((r) => ({ id: r.id, at: new Date(r.at) })),
       maxShiftHours: opts.maxShiftHours,
       now,
@@ -512,9 +604,10 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
       return db.transaction((): RequestCorrectionOutcome => {
         const e = activeEmployee(userId);
         if (!isEmployee(e)) return e;
-        const bad = checkWindow(e, c.at, now);
+        const bad = checkRequest(e, c, now);
         if (bad) return bad;
-        const dup = repo.corrections.findPendingDuplicate(e.id, c.kind, c.at);
+        const endAt = correctionEnd(c);
+        const dup = repo.corrections.findPendingDuplicate(e.id, c.kind, c.at, endAt);
         if (dup) {
           const age = now.getTime() - Date.parse(dup.created_at);
           return age >= 0 && age <= RESEND_WINDOW_MS
@@ -522,7 +615,7 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
             : { kind: 'duplicate', employee: e, request: dup };
         }
         const id = repo.corrections.insert(
-          { employeeId: e.id, kind: c.kind, at: c.at, requestedBy: userId, groupId },
+          { employeeId: e.id, kind: c.kind, at: c.at, endAt, requestedBy: userId, groupId },
           now,
         );
         return {
@@ -531,6 +624,38 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
           request: repo.corrections.get(id)!,
           resent: false,
         };
+      })();
+    },
+
+    /**
+     * §15.3 `取消 R001`: an employee withdraws their own pending request. Admins are not told;
+     * a later 核准 / 駁回 answers `alreadyDecided` (status `cancelled`).
+     */
+    cancelCorrection(userId: string, requestId: number, now: Date): CancelCorrectionOutcome {
+      return db.transaction((): CancelCorrectionOutcome => {
+        const employee = repo.employees.findByUserId(userId);
+        const request = repo.corrections.get(requestId);
+        if (!employee || !request || request.employee_id !== employee.id) {
+          return { kind: 'notFound' };
+        }
+        if (request.status === 'cancelled' && request.decided_by === userId) {
+          const age = now.getTime() - Date.parse(request.decided_at ?? '');
+          if (age >= 0 && age <= RESEND_WINDOW_MS) {
+            return { kind: 'cancelled', request, employee, resent: true };
+          }
+        }
+        if (request.status !== 'pending') return { kind: 'notPending', request };
+        repo.corrections.decide(requestId, 'cancelled', null, null, userId, now);
+        const after = repo.corrections.get(requestId)!;
+        audit(
+          userId,
+          'cancel_correction',
+          displayCorrectionId(requestId),
+          correctionView(request),
+          correctionView(after),
+          now,
+        );
+        return { kind: 'cancelled', request: after, employee, resent: false };
       })();
     },
 
@@ -610,10 +735,17 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
         const employee = repo.employees.get(employeeId);
         if (!employee) return { kind: 'notFound' };
         if (employee.status === 'pending') return { kind: 'notApproved', employee };
-        const bad = checkWindow(employee, c.at, now);
+        const bad = checkRequest(employee, c, now);
         if (bad) return bad;
         const id = repo.corrections.insert(
-          { employeeId, kind: c.kind, at: c.at, requestedBy: actor, groupId: null },
+          {
+            employeeId,
+            kind: c.kind,
+            at: c.at,
+            endAt: correctionEnd(c),
+            requestedBy: actor,
+            groupId: null,
+          },
           now,
         );
         const result = applyRequest(repo.corrections.get(id)!, employee, actor, 'admin', now);
@@ -649,7 +781,11 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
           },
           now,
         );
-        return { kind: 'applied', ...result };
+        return {
+          kind: 'applied',
+          ...result,
+          settledMonths: settledMonths([taipeiMonth(new Date(result.shift.start_at))]),
+        };
       })();
     },
 
@@ -753,7 +889,93 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
           { employee: displayEmployeeId(shift.employee_id), ...shiftView(after) },
           now,
         );
-        return { kind: 'deleted', shift: after, employee: repo.employees.get(shift.employee_id)! };
+        return {
+          kind: 'deleted',
+          shift: after,
+          employee: repo.employees.get(shift.employee_id)!,
+          settledMonths: settledMonths([taipeiMonth(new Date(shift.start_at))]),
+        };
+      })();
+    },
+
+    /**
+     * §15.2 `修改 S0123 上班|下班 [date] HH:MM`. Without a date, 上班 uses the shift's start date
+     * and 下班 the start date, or the next day when the time is not after the start. Editing the
+     * 下班 of an open shift closes it. Refused (nothing written) unless the result starts before
+     * it ends, is at most STAFF_MAX_SHIFT_HOURS, lies between 31 days back and now, and does not
+     * overlap the employee's other live shifts. The edited end's source becomes `admin`.
+     */
+    editShift(actor: string, shiftId: number, edit: EditShiftInput, now: Date): EditShiftOutcome {
+      return db.transaction((): EditShiftOutcome => {
+        const before = repo.shifts.get(shiftId);
+        if (!before) return { kind: 'notFound' };
+        if (before.deleted_at) return { kind: 'deleted', shift: before };
+        const employee = repo.employees.get(before.employee_id)!;
+
+        const oldStart = new Date(before.start_at);
+        const startDate = taipeiDate(oldStart);
+        let startAt = oldStart;
+        let endAt = before.end_at ? new Date(before.end_at) : null;
+        if (edit.kind === 'in') {
+          startAt = taipeiInstant(edit.date ?? startDate, edit.hour, edit.minute);
+        } else {
+          endAt = taipeiInstant(edit.date ?? startDate, edit.hour, edit.minute);
+          if (edit.date === null && endAt.getTime() <= oldStart.getTime()) {
+            endAt = taipeiInstant(addDays(startDate, 1), edit.hour, edit.minute);
+          }
+        }
+
+        const refuse = (reason: EditShiftRefusal, conflictShift: ShiftRow | null = null) => ({
+          kind: 'refused' as const,
+          reason,
+          shift: before,
+          employee,
+          conflictShift,
+        });
+        if (endAt && startAt.getTime() >= endAt.getTime()) return refuse('notAfterStart');
+        if (endAt && endAt.getTime() - startAt.getTime() > maxShiftMs) {
+          return refuse('exceedsMaxHours');
+        }
+        if ((endAt ?? startAt).getTime() > now.getTime()) return refuse('future');
+        if (taipeiDate(startAt) < addDays(taipeiDate(now), -CORRECTION_WINDOW_DAYS)) {
+          return refuse('tooOld');
+        }
+        const conflict = findShiftConflict(
+          { startAt, endAt },
+          repo.shifts.listForEmployee(employee.id).map(toPlanShift),
+          shiftId,
+          opts.maxShiftHours,
+          now,
+        );
+        if (conflict !== null) return refuse('overlap', repo.shifts.get(conflict) ?? null);
+
+        repo.shifts.edit(
+          shiftId,
+          {
+            startAt,
+            endAt,
+            startSource: edit.kind === 'in' ? 'admin' : before.start_source,
+            endSource: edit.kind === 'out' ? 'admin' : before.end_source,
+          },
+          now,
+        );
+        const shift = repo.shifts.get(shiftId)!;
+        audit(
+          actor,
+          'edit_shift',
+          displayShiftId(shiftId),
+          { employee: displayEmployeeId(employee.id), ...shiftView(before) },
+          { employee: displayEmployeeId(employee.id), ...shiftView(shift) },
+          now,
+        );
+        return {
+          kind: 'edited',
+          shift,
+          before,
+          employee,
+          minutes: endAt ? (endAt.getTime() - startAt.getTime()) / 60_000 : null,
+          settledMonths: settledMonths([taipeiMonth(oldStart), taipeiMonth(startAt)]),
+        };
       })();
     },
 

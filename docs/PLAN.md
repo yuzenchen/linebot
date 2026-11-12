@@ -186,3 +186,9 @@ Pi 兩個容器更新、`.env.admin` 加 `ENDUSER_INTERNAL_URL`、CURSOR-AUTOMAT
 - [x] 狀態（2026-11-12 部署 Pi `linebot-admin`，私訊實測通過；群組暫不實測，見 VERIFY.md）
 
 SPEC-ADMIN §16：私訊（`ADMIN_USER_IDS`）與群組（`GROUP_COMMAND_USER_IDS`）的圖片記為待用（只存 LINE 訊息 ID，migration 009 `pending_images`，10 分鐘、最多 3 張、同人同對話），私訊回 `texts.adminImageReceived`、群組不回應；下一則送模型的文字（群組需 tag）才下載、用 `sharp` 縮到長邊 1280px JPEG，以 base64 image block 放進 user 訊息；快捷指令與 `/bug` 不消耗。prompt 加圖片規則；`admin_queries` 加 `image_count`、token 加總與 `model`（migration 009）。圖片內容不落地、不進 log / `admin_queries` / `messages` / `group_context`。測試用 mock blob client、mock model、臨時 SQLite。
+
+## T23 補卡改進與待審提醒（Careful）— 依賴：T21、SPEC-STAFF §15
+
+- [ ] 狀態
+
+SPEC-STAFF §15：migration 010 重建 `correction_requests`（`kind` 加 `shift`、新增 `end_at`、`status` 加 `cancelled`，保留 id 與資料）並建 `staff_reminders`；指令解析加 `補卡 11/12 09:00-18:00`（含管理員代補）、`取消 R001`、`修改 S0123 上班|下班 [M/D] HH:MM`；`corrections.ts` 加整班套用（重疊即失敗）；service 加取消、修改（31 天、不超時、不重疊、不晚於現在，`audit_log` 前後值）；核准失敗通知申請人（管道同核准通知，「下班」等待配對另用文案）；已結算月份的修改、代補、刪除回覆加重新結算提示；`scheduler.ts` 每天 `STAFF_PAYROLL_CRON_HOUR` 檢查超過 3 天待審與發薪日前一天的上月待審，合併一則私訊管理員，`staff_reminders` 先寫後發；`texts.ts`、`說明`、§9 表格同步。測試用 mock LINE client 與臨時 SQLite，含 migration 010 既有資料保留。

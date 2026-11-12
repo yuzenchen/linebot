@@ -1,9 +1,10 @@
 /**
- * Fixed-format command parser for the staff bot (SPEC-STAFF §4–6, §9). Pure: the caller decides
- * who may run what (employee vs admin, group vs DM) and maps outcomes to `texts.ts`.
+ * Fixed-format command parser for the staff bot (SPEC-STAFF §4–6, §9, §15). Pure: the caller
+ * decides who may run what (employee vs admin, group vs DM) and maps outcomes to `texts.ts`.
  */
 import { parseCorrectionId, parseEmployeeId, parseShiftId } from './ids.js';
 import {
+  addDays,
   daysBetween,
   formatLocalDate,
   isValidDate,
@@ -16,18 +17,37 @@ import {
 } from './time.js';
 
 export type PunchKind = 'in' | 'out';
+/** §15.4: a correction is one punch (`in` / `out`) or a whole shift (`shift`). */
+export type CorrectionKind = PunchKind | 'shift';
 
 /** Longest accepted registration name (characters). */
 export const MAX_NAME_LENGTH = 20;
 
-/** A correction time as typed, resolved to a Taipei date and the matching instant. */
-export interface CorrectionTime {
+/** A one-punch correction as typed, resolved to a Taipei date and the matching instant. */
+export interface PunchCorrectionTime {
   date: LocalDate;
   /** `HH:MM`. */
   time: string;
   at: Date;
   kind: PunchKind;
 }
+
+/**
+ * §15.4 whole shift `11/12 09:00-18:00`: `at` = start on `date`; an end at or before the start
+ * is the next day (cross-midnight).
+ */
+export interface ShiftCorrectionTime {
+  date: LocalDate;
+  /** Start `HH:MM`. */
+  time: string;
+  /** End `HH:MM`. */
+  endTime: string;
+  at: Date;
+  endAt: Date;
+  kind: 'shift';
+}
+
+export type CorrectionTime = PunchCorrectionTime | ShiftCorrectionTime;
 
 /** First word of every command; `malformed` echoes it so the caller can show usage. */
 export type CommandKeyword =
@@ -46,13 +66,17 @@ export type CommandKeyword =
   | '停用'
   | '啟用'
   | '打卡紀錄'
-  | '結算';
+  | '結算'
+  | '修改'
+  | '取消';
 
 export type StaffCommand =
   // --- employee ---
   | { type: 'punch'; kind: PunchKind }
   | { type: 'register'; name: string }
   | ({ type: 'correction' } & CorrectionTime)
+  /** §15.3 `取消 R001`: the employee withdraws their own pending request. */
+  | { type: 'cancelCorrection'; requestId: number }
   | { type: 'myShifts'; month: Month; explicitMonth: boolean }
   | { type: 'myPay'; month: Month; explicitMonth: boolean }
   | { type: 'help' }
@@ -72,6 +96,21 @@ export type StaffCommand =
   | { type: 'enableEmployee'; employeeId: number }
   | { type: 'shiftRecords'; employeeId: number; month: Month; explicitMonth: boolean }
   | { type: 'runPayroll'; month: Month; notifyEmployees: boolean }
+  /**
+   * §15.2 `修改 S0123 上班|下班 [M/D] HH:MM`. `date` null = not typed: the service defaults it
+   * from the shift (上班 → its start date; 下班 → its start date, or the next day when the time
+   * is not after the start).
+   */
+  | {
+      type: 'editShift';
+      shiftId: number;
+      kind: PunchKind;
+      date: LocalDate | null;
+      /** `HH:MM`. */
+      time: string;
+      hour: number;
+      minute: number;
+    }
   /** Known keyword with unusable arguments (bad date, missing wage, …). */
   | { type: 'malformed'; keyword: CommandKeyword };
 
@@ -92,6 +131,8 @@ const KEYWORDS = new Set<string>([
   '啟用',
   '打卡紀錄',
   '結算',
+  '修改',
+  '取消',
 ]);
 
 /** Full-width ASCII (`１１／１２`, `０９：００`) → half-width. */
@@ -172,18 +213,62 @@ function parseWage(token: string | undefined): number | null {
   return n > 0 ? n : null;
 }
 
+function hhmm(t: { hour: number; minute: number }): string {
+  return `${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')}`;
+}
+
+/**
+ * `09:00-18:00` (also `~`, and `〜` / `–` from phone keyboards; full-width forms are folded
+ * before this). Spaces around the separator are allowed: the caller joins the tokens.
+ */
+const TIME_RANGE = /^(\d{1,2}:\d{2})[-~〜–](\d{1,2}:\d{2})$/;
+
+/** `11/12 09:00 上班` / `11/12 18:00 下班` / `11/12 09:00-18:00` (§6, §15.4). */
 function parseCorrectionArgs(args: string[], now: Date): CorrectionTime | null {
-  if (args.length !== 3) return null;
+  if (args.length < 2) return null;
   const date = parseDateToken(args[0]!, now, 'past');
-  const time = parseTimeToken(args[1]!);
-  const kind = parseKind(args[2]);
-  if (!date || !time || !kind) return null;
+  if (!date) return null;
+
+  if (args.length === 3) {
+    const kind = parseKind(args[2]);
+    const time = parseTimeToken(args[1]!);
+    if (kind) {
+      if (!time) return null;
+      return { date, time: hhmm(time), at: taipeiInstant(date, time.hour, time.minute), kind };
+    }
+  }
+
+  const range = TIME_RANGE.exec(args.slice(1).join(''));
+  if (!range) return null;
+  const start = parseTimeToken(range[1]!);
+  const end = parseTimeToken(range[2]!);
+  if (!start || !end) return null;
+  const crossesMidnight = end.hour * 60 + end.minute <= start.hour * 60 + start.minute;
   return {
     date,
-    time: `${String(time.hour).padStart(2, '0')}:${String(time.minute).padStart(2, '0')}`,
-    at: taipeiInstant(date, time.hour, time.minute),
-    kind,
+    time: hhmm(start),
+    endTime: hhmm(end),
+    at: taipeiInstant(date, start.hour, start.minute),
+    endAt: taipeiInstant(crossesMidnight ? addDays(date, 1) : date, end.hour, end.minute),
+    kind: 'shift',
   };
+}
+
+/** `上班 09:00` / `下班 11/13 02:00` after `修改 S0123` (§15.2). */
+function parseEditArgs(
+  args: string[],
+  now: Date,
+): { kind: PunchKind; date: LocalDate | null; time: string; hour: number; minute: number } | null {
+  const kind = parseKind(args[0]);
+  if (!kind || (args.length !== 2 && args.length !== 3)) return null;
+  let date: LocalDate | null = null;
+  if (args.length === 3) {
+    date = parseDateToken(args[1]!, now, 'past');
+    if (!date) return null;
+  }
+  const time = parseTimeToken(args[args.length - 1]!);
+  if (!time) return null;
+  return { kind, date, time: hhmm(time), ...time };
 }
 
 /** Optional single month argument; missing → the current Taipei month. */
@@ -307,6 +392,15 @@ export function parseStaffCommand(text: string, now: Date): StaffCommand | null 
         return { type: 'runPayroll', month, notifyEmployees: true };
       }
       return malformed;
+    }
+    case '修改': {
+      const shiftId = args[0] ? parseShiftId(args[0]) : null;
+      const edit = shiftId ? parseEditArgs(args.slice(1), now) : null;
+      return shiftId && edit ? { type: 'editShift', shiftId, ...edit } : malformed;
+    }
+    case '取消': {
+      const requestId = args.length === 1 ? parseCorrectionId(args[0]!) : null;
+      return requestId ? { type: 'cancelCorrection', requestId } : malformed;
     }
   }
 }

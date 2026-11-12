@@ -264,7 +264,7 @@ describe('staff profile: group', () => {
     expect(texts(s.take())).toEqual([`reply:${A2}:R001 已處理過（已核准）`]);
   });
 
-  it('rejection DMs the applicant; a failed approval only answers the admin', async () => {
+  it('rejection DMs the applicant; a failed 下班 approval tells them it will pair later', async () => {
     const s = setup(tp('2026-11-12', 20, 0));
     hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
     await s.dm('Uwang', '補卡 11/12 18:00 下班');
@@ -272,7 +272,10 @@ describe('staff profile: group', () => {
       'reply:Uwang:已送出補卡申請 R001（11/12 18:00 下班），等待管理員核准',
     );
     await s.dm(A1, '核准 R001');
-    expect(texts(s.take())).toEqual([`reply:${A1}:補卡 R001 無法套用：找不到可配對的上班紀錄`]);
+    expect(texts(s.take())).toEqual([
+      'push:Uwang:補卡 R001 無法套用：找不到可配對的上班紀錄，等補上班紀錄後會自動配對',
+      `reply:${A1}:補卡 R001 無法套用：找不到可配對的上班紀錄`,
+    ]);
 
     await s.dm('Uwang', '補卡 11/12 09:00 上班');
     s.take();
@@ -652,5 +655,193 @@ describe('staff profile: wiring', () => {
   it('follow gets the staff welcome text', async () => {
     const s = setup(tp('2026-11-12', 9, 0));
     expect(s.profile.welcomeText()).toBe(staffTexts.welcome);
+  });
+});
+
+describe('staff profile: correction improvements (§15)', () => {
+  const SETTLED = '2026-11 已結算，請輸入：結算 2026-11 重新結算';
+
+  it('whole shift: group request → admins → approve; a failed approval reaches the applicant', async () => {
+    const s = setup(tp('2026-11-13', 10, 0));
+    hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
+    await s.group('Uwang', '補卡 11/12 22:00-02:00');
+    const notice =
+      '補卡申請 R001 王小明 11/12 22:00–11/13 02:00 整班。核准請回：核准 R001，駁回請回：駁回 R001';
+    expect(texts(s.take())).toEqual([
+      `push:${A1}:${notice}`,
+      `push:${A2}:${notice}`,
+      `reply:${GROUP}:已送出補卡申請 R001（11/12 22:00–11/13 02:00 整班），等待管理員核准`,
+    ]);
+    await s.dm(A1, '待處理');
+    expect(texts(s.take())).toEqual([
+      `reply:${A1}:補卡申請：\nR001 王小明 11/12 22:00–11/13 02:00 整班`,
+    ]);
+    await s.dm(A1, '核准 R001');
+    expect(texts(s.take())).toEqual([
+      'push:Uwang:補卡 R001 已核准',
+      `reply:${A1}:已核准補卡 R001（王小明 11/12 22:00–11/13 02:00 整班）`,
+    ]);
+    await s.dm('Uwang', '我的打卡');
+    expect(texts(s.take())).toEqual([
+      [
+        'reply:Uwang:2026-11 打卡紀錄（王小明）',
+        '11/12 22:00–02:00（隔日）｜4 小時 0 分',
+        '合計 1 班｜4 小時 0 分',
+      ].join('\n'),
+    ]);
+
+    // Overlapping request: approval fails, nothing written, applicant told (group fallback).
+    await s.group('Uwang', '補卡 11/12 09:00~23:00');
+    s.take();
+    failPushesTo(s, ['Uwang']);
+    await s.dm(A2, '核准 R002');
+    const reason = '和 S0001（11/12 22:00–11/13 02:00）重疊';
+    expect(texts(s.take())).toEqual([
+      `push:Uwang:補卡 R002 無法套用：${reason}，請聯絡管理員`,
+      `push:${GROUP}:王小明 補卡 R002 無法套用：${reason}，請聯絡管理員`,
+      `reply:${A2}:補卡 R002 無法套用：${reason}`,
+    ]);
+    expect(s.seed.repo.shifts.listForEmployee(1)).toHaveLength(1);
+
+    await s.dm('Uwang', '補卡 11/12 01:00-18:00');
+    await s.dm('Uwang', '補卡 11/13 09:00-11:00');
+    expect(texts(s.take())).toEqual([
+      'reply:Uwang:整班補卡不能超過 16 小時',
+      `reply:Uwang:${staffTexts.correctionFuture}`,
+    ]);
+  });
+
+  it('取消: own pending only, admins are not told, a later 核准 / 駁回 answers 已取消', async () => {
+    const s = setup(tp('2026-11-12', 20, 0));
+    hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
+    hire(s.seed, 'Ulee', '李小華', 200, tp('2026-11-01', 8));
+    await s.group('Uwang', '補卡 11/12 09:00 上班');
+    s.take();
+
+    await s.group('Ulee', '取消 R001');
+    await s.group('Ux', '取消 R001');
+    await s.group('Uwang', '取消 R001');
+    expect(texts(s.take())).toEqual([
+      `reply:${GROUP}:找不到 R001`,
+      `reply:${GROUP}:找不到 R001`,
+      `reply:${GROUP}:已取消補卡申請 R001（11/12 09:00 上班）`,
+    ]);
+    s.setClock(tp('2026-11-12', 20, 5));
+    await s.dm('Uwang', '取消 R001');
+    await s.dm(A1, '核准 R001');
+    await s.dm(A2, '駁回 R001');
+    expect(texts(s.take())).toEqual([
+      'reply:Uwang:R001 已取消，無法取消',
+      `reply:${A1}:R001 已取消`,
+      `reply:${A2}:R001 已取消`,
+    ]);
+    expect(s.seed.repo.shifts.listForEmployee(1)).toHaveLength(0);
+
+    // A malformed 取消 is chat in the group, a usage hint in a DM.
+    await s.group('Uwang', '取消 明天的聚餐');
+    await s.dm('Uwang', '取消');
+    expect(texts(s.take())).toEqual([`reply:Uwang:${staffTexts.usage.取消}`]);
+
+    await s.dm('Uwang', '補卡 11/12 09:00 上班');
+    await s.dm(A1, '核准 R002');
+    s.take();
+    await s.dm('Uwang', '取消 R002');
+    expect(texts(s.take())).toEqual(['reply:Uwang:R002 已核准，無法取消']);
+    expect(
+      (
+        s.db.prepare("SELECT actor FROM audit_log WHERE action = 'cancel_correction'").all() as {
+          actor: string;
+        }[]
+      ).map((r) => r.actor),
+    ).toEqual(['Uwang']);
+  });
+
+  it('修改 / 代補 / 刪除 answer only the admin and add the settled-month hint', async () => {
+    const s = setup(tp('2026-11-13', 12, 0));
+    const e = hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
+    addShift(s.seed, e.id, tp('2026-11-12', 9), tp('2026-11-12', 18)); // S0001
+    addShift(s.seed, e.id, tp('2026-11-12', 22), null); // S0002, open
+
+    await s.dm(A1, '修改 S0001 下班 18:30');
+    await s.dm(A1, '修改 S0002 下班 02:00'); // closes the open shift, next day
+    await s.dm(A1, '修改 S0001 上班 19:00');
+    await s.dm(A1, '修改 S0001 下班 22:30');
+    await s.dm(A1, '修改 S0001 下班 11/13 13:00');
+    await s.dm(A1, '修改 S0099 上班 09:00');
+    await s.dm(A1, '修改 S0001');
+    expect(texts(s.take())).toEqual([
+      `reply:${A1}:已修改 S0001 王小明 11/12 09:00–18:30（9 小時 30 分）`,
+      `reply:${A1}:已修改 S0002 王小明 11/12 22:00–11/13 02:00（4 小時 0 分）`,
+      `reply:${A1}:無法修改 S0001：上班時間須早於下班時間`,
+      `reply:${A1}:無法修改 S0001：和 S0002（11/12 22:00–11/13 02:00）重疊`,
+      `reply:${A1}:無法修改 S0001：該班會超過 16 小時`,
+      `reply:${A1}:找不到 S0099`,
+      `reply:${A1}:${staffTexts.usage.修改}`,
+    ]);
+
+    s.seed.runPayroll('2026-11', A1, tp('2026-11-13', 11));
+    await s.dm(A1, '修改 S0001 上班 08:30');
+    await s.dm(A1, '補卡 E001 11/11 09:00-18:00');
+    await s.dm(A1, '刪除 S0003');
+    expect(texts(s.take())).toEqual([
+      `reply:${A1}:已修改 S0001 王小明 11/12 08:30–18:30（10 小時 0 分）\n${SETTLED}`,
+      `reply:${A1}:已代補 E001 王小明 11/11 09:00–18:00 整班（R001）\n${SETTLED}`,
+      `reply:${A1}:已刪除 S0003（王小明 11/11 09:00–18:00）\n${SETTLED}`,
+    ]);
+
+    // Employees cannot edit.
+    await s.dm('Uwang', '修改 S0001 上班 08:00');
+    await s.dm('Uwang', '修改');
+    expect(texts(s.take())).toEqual([
+      `reply:Uwang:${staffTexts.unknownCommand}`,
+      `reply:Uwang:${staffTexts.unknownCommand}`,
+    ]);
+    const edits = s.db
+      .prepare("SELECT before_json, after_json FROM audit_log WHERE action = 'edit_shift'")
+      .all() as { before_json: string; after_json: string }[];
+    expect(edits).toHaveLength(3);
+    expect(JSON.parse(edits[0]!.before_json)).toMatchObject({
+      end_at: tp('2026-11-12', 18).toISOString(),
+      end_source: 'punch',
+    });
+    expect(JSON.parse(edits[0]!.after_json)).toMatchObject({
+      end_at: tp('2026-11-12', 18, 30).toISOString(),
+      end_source: 'admin',
+    });
+  });
+
+  it('daily reminder: DMs every admin once a day from the payroll hour, not again after a restart', async () => {
+    const s = setup(tp('2026-11-12', 20, 0));
+    hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
+    s.seed.runPayroll('2026-10', 'schedule', tp('2026-11-01', 9)); // October already settled
+    await s.group('Uwang', '補卡 11/12 09:00 上班');
+    s.take();
+
+    s.setClock(tp('2026-11-16', 8, 59));
+    const early = s.makeProfile();
+    await early.start?.();
+    await early.stop?.();
+    expect(s.take()).toEqual([]);
+
+    s.setClock(tp('2026-11-16', 9, 0));
+    const p = s.makeProfile();
+    await p.start?.();
+    await p.stop?.();
+    const text = '有 1 筆補卡待處理超過 3 天：R001 王小明 11/12 09:00 上班。輸入：待處理';
+    expect(texts(s.take())).toEqual([`push:${A1}:${text}`, `push:${A2}:${text}`]);
+
+    s.setClock(tp('2026-11-16', 15, 0));
+    const again = s.makeProfile();
+    await again.start?.();
+    await again.stop?.();
+    expect(s.take()).toEqual([]);
+  });
+
+  it('說明 lists the new commands', () => {
+    expect(staffTexts.employeeHelp).toContain('補卡 11/12 09:00-18:00');
+    expect(staffTexts.employeeHelp).toContain('取消 R001');
+    expect(staffTexts.adminHelp).toContain('補卡 E001 11/12 09:00-18:00');
+    expect(staffTexts.adminHelp).toContain('修改 S0123 上班 09:00');
+    expect(staffTexts.adminHelp).toContain('修改 S0123 下班 11/13 02:00');
   });
 });

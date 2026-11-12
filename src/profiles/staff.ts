@@ -1,14 +1,20 @@
 import { createStaffHandlers } from '../handlers/staff.js';
 import { createStaffMessenger } from '../staff/messenger.js';
 import { createPayrollReporter } from '../staff/payrollReport.js';
-import { type PayrollScheduler, startPayrollScheduler } from '../staff/scheduler.js';
+import {
+  type PayrollScheduler,
+  type ReminderScheduler,
+  startPayrollScheduler,
+  startReminderScheduler,
+} from '../staff/scheduler.js';
 import { createStaffService } from '../staff/service.js';
 import { staffTexts } from '../texts.js';
 import type { BotProfile, Shared } from './types.js';
 
 /**
  * Employee punch-clock / payroll bot (SPEC-STAFF). Uses only LINE + SQLite: no eshop, Anthropic,
- * Grok, job handlers or extra routes. `start` begins the monthly payroll check (§8).
+ * Grok, job handlers or extra routes. `start` begins the monthly payroll check (§8) and the daily
+ * pending-correction reminder (§15.5).
  */
 export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = {}): BotProfile {
   const { config, db, repos, replier, logger } = shared;
@@ -38,6 +44,7 @@ export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = 
     log: logger,
   });
   let scheduler: PayrollScheduler | undefined;
+  let reminders: ReminderScheduler | undefined;
 
   return {
     name: 'staff',
@@ -55,11 +62,23 @@ export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = 
         now: opts.now,
         log: logger,
       });
-      logger.info({ hour: config.STAFF_PAYROLL_CRON_HOUR }, 'staff payroll scheduler started');
-      return scheduler.initial.then(() => undefined);
+      reminders = startReminderScheduler({
+        service,
+        messenger,
+        hour: config.STAFF_PAYROLL_CRON_HOUR,
+        payday: config.STAFF_PAYDAY,
+        now: opts.now,
+        log: logger,
+      });
+      logger.info(
+        { hour: config.STAFF_PAYROLL_CRON_HOUR },
+        'staff payroll and reminder schedulers started',
+      );
+      return Promise.all([scheduler.initial, reminders.initial]).then(() => undefined);
     },
     stop: async () => {
       scheduler?.stop();
+      reminders?.stop();
     },
   };
 }

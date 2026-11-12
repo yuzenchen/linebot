@@ -20,7 +20,7 @@ import type {
   ShiftSource,
   WageRateRow,
 } from './repo.js';
-import type { PunchKind } from './commands.js';
+import type { CorrectionKind } from './commands.js';
 import {
   addDays,
   type LocalDate,
@@ -81,8 +81,10 @@ export interface PayrollPendingCorrection {
   employeeId: number;
   employeeDisplayId: string;
   name: string;
-  kind: PunchKind;
+  kind: CorrectionKind;
   at: string;
+  /** End of a whole-shift (`shift`) request, else null. */
+  endAt: string | null;
 }
 
 export interface PayrollResult {
@@ -278,6 +280,7 @@ export function calculatePayroll(input: PayrollInput): PayrollResult {
         name: e?.name ?? '',
         kind: c.kind,
         at: c.at,
+        endAt: c.end_at ?? null,
       };
     });
   const registrations = input.employees

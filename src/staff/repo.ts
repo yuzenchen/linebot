@@ -1,14 +1,15 @@
 /**
- * SQLite access for the staff tables (migration 008). Every write takes an explicit `now`; the
- * service layer wraps multi-row changes in `db.transaction`.
+ * SQLite access for the staff tables (migration 008; `correction_requests` rebuilt and
+ * `staff_reminders` added in 010). Every write takes an explicit `now`; the service layer wraps
+ * multi-row changes in `db.transaction`.
  */
 import type { Database } from 'better-sqlite3';
-import type { PunchKind } from './commands.js';
+import type { CorrectionKind } from './commands.js';
 import type { LocalDate, Month } from './time.js';
 
 export type EmployeeStatus = 'pending' | 'active' | 'disabled';
 export type ShiftSource = 'punch' | 'correction' | 'admin';
-export type CorrectionStatus = 'pending' | 'approved' | 'rejected' | 'failed';
+export type CorrectionStatus = 'pending' | 'approved' | 'rejected' | 'failed' | 'cancelled';
 
 export interface EmployeeRow {
   id: number;
@@ -51,8 +52,11 @@ export interface ShiftRow {
 export interface CorrectionRow {
   id: number;
   employee_id: number;
-  kind: PunchKind;
+  /** `in` / `out` = one punch at `at`; `shift` = a whole shift from `at` to `end_at`. */
+  kind: CorrectionKind;
   at: string;
+  /** End of a `shift` request; null for `in` / `out`. */
+  end_at: string | null;
   status: CorrectionStatus;
   /** Failure reason code (see `CorrectionFailureReason`), or null. */
   reason: string | null;
@@ -63,8 +67,17 @@ export interface CorrectionRow {
   /** Shift created / changed when approved. */
   shift_id: number | null;
   created_at: string;
+  /** Admin who decided, or the employee who cancelled. */
   decided_by: string | null;
   decided_at: string | null;
+}
+
+export interface StaffReminderRow {
+  /** Taipei date of the daily check. */
+  date: LocalDate;
+  /** Null when nothing qualified that day (checked, nothing sent). */
+  sent_at: string | null;
+  content_json: string | null;
 }
 
 export interface PayrollRunRow {
@@ -96,8 +109,10 @@ export interface InsertShiftInput {
 
 export interface InsertCorrectionInput {
   employeeId: number;
-  kind: PunchKind;
+  kind: CorrectionKind;
   at: Date;
+  /** Required for `shift`, null otherwise. */
+  endAt: Date | null;
   requestedBy: string;
   groupId: string | null;
 }
@@ -162,17 +177,20 @@ export function createStaffRepo(db: Database) {
     setStart: db.prepare(
       'UPDATE shifts SET start_at = ?, start_source = ?, updated_at = ? WHERE id = ?',
     ),
+    edit: db.prepare(
+      'UPDATE shifts SET start_at = ?, end_at = ?, start_source = ?, end_source = ?, overdue = 0, updated_at = ? WHERE id = ?',
+    ),
     markOverdue: db.prepare('UPDATE shifts SET overdue = 1, updated_at = ? WHERE id = ?'),
     softDelete: db.prepare('UPDATE shifts SET deleted_at = ?, updated_at = ? WHERE id = ?'),
   };
   const corr = {
     insert: db.prepare(
-      "INSERT INTO correction_requests (employee_id, kind, at, status, requested_by, group_id, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+      "INSERT INTO correction_requests (employee_id, kind, at, end_at, status, requested_by, group_id, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
     ),
     get: db.prepare('SELECT * FROM correction_requests WHERE id = ?'),
     pending: db.prepare("SELECT * FROM correction_requests WHERE status = 'pending' ORDER BY id"),
     pendingDuplicate: db.prepare(
-      "SELECT * FROM correction_requests WHERE employee_id = ? AND kind = ? AND at = ? AND status = 'pending' ORDER BY id LIMIT 1",
+      "SELECT * FROM correction_requests WHERE employee_id = ? AND kind = ? AND at = ? AND end_at IS ? AND status = 'pending' ORDER BY id LIMIT 1",
     ),
     pairableOut: db.prepare(
       "SELECT * FROM correction_requests WHERE employee_id = ? AND kind = 'out' AND at > ? AND at <= ? AND (status = 'pending' OR (status = 'failed' AND reason = 'noOpenShift')) ORDER BY at, id",
@@ -187,6 +205,13 @@ export function createStaffRepo(db: Database) {
     ),
     get: db.prepare('SELECT * FROM payroll_runs WHERE id = ?'),
     forMonth: db.prepare('SELECT * FROM payroll_runs WHERE month = ? ORDER BY id'),
+    anyForMonth: db.prepare('SELECT 1 FROM payroll_runs WHERE month = ? LIMIT 1'),
+  };
+  const reminder = {
+    insert: db.prepare(
+      'INSERT OR IGNORE INTO staff_reminders (date, sent_at, content_json) VALUES (?, ?, ?)',
+    ),
+    get: db.prepare('SELECT * FROM staff_reminders WHERE date = ?'),
   };
   const audit = {
     insert: db.prepare(
@@ -262,6 +287,26 @@ export function createStaffRepo(db: Database) {
       setStart(id: number, startAt: Date, source: ShiftSource, now: Date): void {
         shift.setStart.run(iso(startAt), source, iso(now), id);
       },
+      /** `修改 S0123`: rewrites both ends (and their sources) and clears the 未下班 flag. */
+      edit(
+        id: number,
+        s: {
+          startAt: Date;
+          endAt: Date | null;
+          startSource: ShiftSource;
+          endSource: ShiftSource | null;
+        },
+        now: Date,
+      ): void {
+        shift.edit.run(
+          iso(s.startAt),
+          s.endAt ? iso(s.endAt) : null,
+          s.startSource,
+          s.endSource,
+          iso(now),
+          id,
+        );
+      },
       markOverdue(id: number, now: Date): void {
         shift.markOverdue.run(iso(now), id);
       },
@@ -275,6 +320,7 @@ export function createStaffRepo(db: Database) {
           c.employeeId,
           c.kind,
           iso(c.at),
+          c.endAt ? iso(c.endAt) : null,
           c.requestedBy,
           c.groupId,
           iso(now),
@@ -283,9 +329,19 @@ export function createStaffRepo(db: Database) {
       },
       get: (id: number) => corr.get.get(id) as CorrectionRow | undefined,
       listPending: () => corr.pending.all() as CorrectionRow[],
-      findPendingDuplicate: (employeeId: number, kind: PunchKind, at: Date) =>
-        corr.pendingDuplicate.get(employeeId, kind, iso(at)) as CorrectionRow | undefined,
-      /** `下班` requests in `(after, upTo]` still waiting for a `上班` (pending, or failed for lack of one). */
+      /** Pending request of the same kind and time(s); `endAt` only for `shift`. */
+      findPendingDuplicate: (
+        employeeId: number,
+        kind: CorrectionKind,
+        at: Date,
+        endAt: Date | null = null,
+      ) =>
+        corr.pendingDuplicate.get(employeeId, kind, iso(at), endAt ? iso(endAt) : null) as
+          CorrectionRow | undefined,
+      /**
+       * `下班` requests in `(after, upTo]` still waiting for a `上班` (pending, or failed for lack
+       * of one). Whole-shift (`shift`) and cancelled requests never pair.
+       */
       listPairableOut: (employeeId: number, after: Date, upTo: Date) =>
         corr.pairableOut.all(employeeId, iso(after), iso(upTo)) as CorrectionRow[],
       decide(
@@ -306,6 +362,18 @@ export function createStaffRepo(db: Database) {
       },
       get: (id: number) => payroll.get.get(id) as PayrollRunRow | undefined,
       listForMonth: (month: Month) => payroll.forMonth.all(month) as PayrollRunRow[],
+      /** §15.2: a month counts as settled once any run (schedule or manual) exists for it. */
+      existsForMonth: (month: Month) => payroll.anyForMonth.get(month) !== undefined,
+    },
+    reminders: {
+      /**
+       * Records the day's reminder check (before anything is sent); false when that date already
+       * has a row, i.e. an earlier check or process got there first and nothing should be sent.
+       */
+      tryInsert(date: LocalDate, sentAt: Date | null, content: unknown): boolean {
+        return reminder.insert.run(date, sentAt ? iso(sentAt) : null, json(content)).changes === 1;
+      },
+      get: (date: LocalDate) => reminder.get.get(date) as StaffReminderRow | undefined,
     },
     audit: {
       insert(

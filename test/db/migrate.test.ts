@@ -1,5 +1,7 @@
+import BetterSqlite3 from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/db/migrate.js';
+import { migrations } from '../../src/db/migrations/index.js';
 import { memoryDb } from './helpers.js';
 
 const expectedTables = [
@@ -24,6 +26,7 @@ const expectedTables = [
   'payroll_runs',
   'audit_log',
   'pending_images',
+  'staff_reminders',
   'schema_migrations',
 ];
 
@@ -34,6 +37,7 @@ describe('runMigrations', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]
     ).map((r) => r.name);
     for (const t of expectedTables) expect(names).toContain(t);
+    expect(names).not.toContain('correction_requests_new');
 
     expect(runMigrations(db)).toBe(0);
     const rows = db.prepare('SELECT version, name FROM schema_migrations').all();
@@ -47,6 +51,7 @@ describe('runMigrations', () => {
       { version: 7, name: '007_group_context' },
       { version: 8, name: '008_staff' },
       { version: 9, name: '009_pending_images' },
+      { version: 10, name: '010_staff_corrections' },
     ]);
   });
 
@@ -78,5 +83,116 @@ describe('runMigrations', () => {
         'idx_audit_log_created',
       ]),
     );
+  });
+});
+
+describe('migration 010 (correction_requests rebuild)', () => {
+  /** A database migrated only up to `version`, the way an older deployment left it. */
+  function dbAt(version: number) {
+    const db = new BetterSqlite3(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)',
+    );
+    const record = db.prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
+    );
+    for (const m of migrations.filter((x) => x.version <= version)) {
+      db.exec(m.sql);
+      record.run(m.version, m.name, '2026-11-01T00:00:00.000Z');
+    }
+    return db;
+  }
+
+  it('keeps every existing row, its id and the AUTOINCREMENT high-water mark', () => {
+    const db = dbAt(9);
+    db.prepare(
+      "INSERT INTO employees (id, user_id, name, status, created_at) VALUES (1, 'Ua', '王小明', 'active', 'c')",
+    ).run();
+    const insert = db.prepare(
+      'INSERT INTO correction_requests (id, employee_id, kind, at, status, reason, requested_by, group_id, shift_id, created_at, decided_by, decided_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    insert.run(1, 'in', 'a1', 'approved', null, 'Ua', 'Cg', 7, 'c1', 'Uadmin', 'd1');
+    insert.run(2, 'out', 'a2', 'failed', 'noOpenShift', 'Ua', null, null, 'c2', 'Uadmin', 'd2');
+    insert.run(5, 'out', 'a5', 'pending', null, 'Ua', 'Cg', null, 'c5', null, null);
+    // R006 existed once and is gone: its id must not be handed out again.
+    insert.run(6, 'in', 'a6', 'pending', null, 'Ua', null, null, 'c6', null, null);
+    db.prepare('DELETE FROM correction_requests WHERE id = 6').run();
+    const before = db.prepare('SELECT * FROM correction_requests ORDER BY id').all() as Record<
+      string,
+      unknown
+    >[];
+
+    expect(runMigrations(db)).toBe(1);
+
+    const after = db.prepare('SELECT * FROM correction_requests ORDER BY id').all();
+    expect(after).toEqual(before.map((r) => ({ ...r, end_at: null })));
+    const next = db
+      .prepare(
+        "INSERT INTO correction_requests (employee_id, kind, at, end_at, status, created_at) VALUES (1, 'shift', 's', 'e', 'pending', 'c')",
+      )
+      .run();
+    expect(Number(next.lastInsertRowid)).toBe(7);
+    db.prepare("UPDATE correction_requests SET status = 'cancelled' WHERE id = 5").run();
+
+    // New CHECK values are accepted above; unknown ones are still rejected.
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO correction_requests (employee_id, kind, at, status) VALUES (1, 'lunch', 'x', 'pending')",
+        )
+        .run(),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db.prepare("UPDATE correction_requests SET status = 'gone' WHERE id = 1").run(),
+    ).toThrow(/CHECK/);
+    // The foreign key to employees survives the rebuild.
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO correction_requests (employee_id, kind, at, status) VALUES (99, 'in', 'x', 'pending')",
+        )
+        .run(),
+    ).toThrow(/FOREIGN KEY/);
+
+    const idx = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'correction_requests'",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    expect(idx).toEqual(
+      expect.arrayContaining([
+        'idx_correction_requests_status',
+        'idx_correction_requests_employee',
+      ]),
+    );
+    expect(
+      db.prepare("SELECT name FROM sqlite_sequence WHERE name LIKE 'correction%'").all(),
+    ).toEqual([{ name: 'correction_requests' }]);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('migrates an empty table and creates staff_reminders keyed by date', () => {
+    const db = dbAt(9);
+    expect(runMigrations(db)).toBe(1);
+    db.prepare(
+      "INSERT INTO employees (id, user_id, name, status) VALUES (1, 'Ua', '王小明', 'active')",
+    ).run();
+    const first = db
+      .prepare(
+        "INSERT INTO correction_requests (employee_id, kind, at, status) VALUES (1, 'in', 'x', 'pending')",
+      )
+      .run();
+    expect(Number(first.lastInsertRowid)).toBe(1);
+    db.prepare('INSERT INTO staff_reminders (date, sent_at, content_json) VALUES (?, ?, ?)').run(
+      '2026-11-12',
+      null,
+      '{}',
+    );
+    expect(() =>
+      db.prepare("INSERT INTO staff_reminders (date) VALUES ('2026-11-12')").run(),
+    ).toThrow(/UNIQUE/);
   });
 });

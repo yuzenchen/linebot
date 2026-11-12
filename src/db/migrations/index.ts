@@ -296,6 +296,50 @@ ALTER TABLE admin_queries ADD COLUMN output_tokens INTEGER;
 ALTER TABLE admin_queries ADD COLUMN model TEXT;
 `;
 
+/**
+ * SPEC-STAFF §15.6: `correction_requests` gains `kind = 'shift'` (whole shift, `at`–`end_at`),
+ * `end_at` and `status = 'cancelled'`. SQLite cannot alter a CHECK, so the table is rebuilt:
+ * copy every row with its id, keep the AUTOINCREMENT high-water mark (R ids are never reused),
+ * then swap names and recreate the indexes. Nothing references `correction_requests`, so the drop
+ * is safe with foreign keys on. `staff_reminders` records the daily pending-correction reminder
+ * (§15.5): one row per Taipei date, written before anything is sent; `sent_at` stays null when
+ * nothing qualified that day.
+ */
+const staffCorrectionsV2 = `
+CREATE TABLE correction_requests_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees (id),
+  kind TEXT NOT NULL CHECK (kind IN ('in', 'out', 'shift')),
+  at TEXT NOT NULL,
+  end_at TEXT,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'failed', 'cancelled')) DEFAULT 'pending',
+  reason TEXT,
+  requested_by TEXT,
+  group_id TEXT,
+  shift_id INTEGER,
+  created_at TEXT,
+  decided_by TEXT,
+  decided_at TEXT
+);
+INSERT INTO correction_requests_new
+  (id, employee_id, kind, at, end_at, status, reason, requested_by, group_id, shift_id, created_at, decided_by, decided_at)
+SELECT id, employee_id, kind, at, NULL, status, reason, requested_by, group_id, shift_id, created_at, decided_by, decided_at
+FROM correction_requests;
+DELETE FROM sqlite_sequence WHERE name = 'correction_requests_new';
+INSERT INTO sqlite_sequence (name, seq)
+  SELECT 'correction_requests_new', seq FROM sqlite_sequence WHERE name = 'correction_requests';
+DROP TABLE correction_requests;
+ALTER TABLE correction_requests_new RENAME TO correction_requests;
+CREATE INDEX IF NOT EXISTS idx_correction_requests_status ON correction_requests (status, id);
+CREATE INDEX IF NOT EXISTS idx_correction_requests_employee ON correction_requests (employee_id, status);
+
+CREATE TABLE IF NOT EXISTS staff_reminders (
+  date TEXT PRIMARY KEY,
+  sent_at TEXT,
+  content_json TEXT
+);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
@@ -306,4 +350,5 @@ export const migrations: Migration[] = [
   { version: 7, name: '007_group_context', sql: groupContext },
   { version: 8, name: '008_staff', sql: staff },
   { version: 9, name: '009_pending_images', sql: pendingImages },
+  { version: 10, name: '010_staff_corrections', sql: staffCorrectionsV2 },
 ];

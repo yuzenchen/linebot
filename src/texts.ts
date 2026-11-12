@@ -1,4 +1,4 @@
-import type { CommandKeyword, PunchKind } from './staff/commands.js';
+import type { CommandKeyword, CorrectionKind, PunchKind } from './staff/commands.js';
 import type { PayrollEmployeeLine, PayrollResult, ShiftDetail } from './staff/payroll.js';
 import { type LocalDate, type Month, splitMinutes, taipeiDate, taipeiTime } from './staff/time.js';
 
@@ -322,6 +322,16 @@ export function staffDayTime(iso: string): string {
   return `${staffDay(taipeiDate(d))} ${taipeiTime(d)}`;
 }
 
+/**
+ * A shift's time span: `11/12 09:00–18:00`; an end on another Taipei day carries its date
+ * (`11/12 22:00–11/13 02:00`); no end → `11/12 09:00–未下班`.
+ */
+export function staffSpan(startIso: string, endIso: string | null): string {
+  if (!endIso) return `${staffDayTime(startIso)}–未下班`;
+  const sameDay = taipeiDate(new Date(startIso)) === taipeiDate(new Date(endIso));
+  return `${staffDayTime(startIso)}–${sameDay ? staffTime(endIso) : staffDayTime(endIso)}`;
+}
+
 export function staffKind(kind: PunchKind): string {
   return kind === 'in' ? '上班' : '下班';
 }
@@ -348,7 +358,8 @@ export const staffTexts = {
   employeeHelp: [
     '員工指令：',
     '群組：上班、下班、註冊 你的名字',
-    '補卡 11/12 09:00 上班（群組或私訊）',
+    '補卡 11/12 09:00 上班、補卡 11/12 09:00-18:00 整班（群組或私訊）',
+    '取消 R001（取消自己待審的補卡，群組或私訊）',
     '我的打卡、我的打卡 2026-11',
     '我的薪資、我的薪資 2026-11',
   ].join('\n'),
@@ -358,7 +369,8 @@ export const staffTexts = {
     '核准 E001 時薪 200、駁回 E001',
     '核准 R001、駁回 R001',
     '時薪 E001 210、時薪 E001 210 自 12/1',
-    '補卡 E001 11/12 18:00 下班',
+    '補卡 E001 11/12 18:00 下班、補卡 E001 11/12 09:00-18:00',
+    '修改 S0123 上班 09:00、修改 S0123 下班 11/13 02:00',
     '刪除打卡 E001 11/12，再回：刪除 S0123',
     '停用 E001、啟用 E001',
     '打卡紀錄 E001 2026-11',
@@ -367,7 +379,7 @@ export const staffTexts = {
   /** Usage hint for a known keyword with bad arguments. */
   usage: {
     註冊: '格式：註冊 你的名字（最多 20 字）',
-    補卡: '格式：補卡 11/12 09:00 上班 或 補卡 11/12 18:00 下班',
+    補卡: '格式：補卡 11/12 09:00 上班、補卡 11/12 18:00 下班 或 補卡 11/12 09:00-18:00',
     我的打卡: '格式：我的打卡 或 我的打卡 2026-11',
     我的薪資: '格式：我的薪資 或 我的薪資 2026-11',
     說明: '格式：說明',
@@ -382,9 +394,11 @@ export const staffTexts = {
     啟用: '格式：啟用 E001',
     打卡紀錄: '格式：打卡紀錄 E001 2026-11',
     結算: '格式：結算 2026-11 或 結算 2026-11 通知員工',
+    修改: '格式：修改 S0123 上班 09:00、修改 S0123 下班 18:30 或 修改 S0123 下班 11/13 02:00',
+    取消: '格式：取消 R001',
   } satisfies Record<CommandKeyword, string>,
   /** Extra line for admins who mistype 補卡. */
-  adminCorrectionUsage: '代補：補卡 E001 11/12 18:00 下班',
+  adminCorrectionUsage: '代補：補卡 E001 11/12 18:00 下班 或 補卡 E001 11/12 09:00-18:00',
 } as const;
 
 // --- §4 registration ---
@@ -454,31 +468,46 @@ export function staffOverdue(name: string, maxHours: number): string {
 
 // --- §6 corrections ---
 
-/** `11/12 09:00 上班`. */
-export function staffCorrectionWhat(atIso: string, kind: PunchKind): string {
+/**
+ * `11/12 09:00 上班`; a whole shift (§15.4, `endIso` set) → `11/12 09:00–18:00 整班`
+ * (`11/12 22:00–11/13 02:00 整班` across midnight).
+ */
+export function staffCorrectionWhat(
+  atIso: string,
+  kind: CorrectionKind,
+  endIso: string | null = null,
+): string {
+  if (kind === 'shift') return `${staffSpan(atIso, endIso)} 整班`;
   return `${staffDayTime(atIso)} ${staffKind(kind)}`;
 }
 export function staffCorrectionRequested(
   displayId: string,
   atIso: string,
-  kind: PunchKind,
+  kind: CorrectionKind,
+  endIso: string | null = null,
 ): string {
-  return `已送出補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind)}），等待管理員核准`;
+  return `已送出補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind, endIso)}），等待管理員核准`;
 }
 export function staffCorrectionDuplicate(
   displayId: string,
   atIso: string,
-  kind: PunchKind,
+  kind: CorrectionKind,
+  endIso: string | null = null,
 ): string {
-  return `補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind)}）已在審核中`;
+  return `補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind, endIso)}）已在審核中`;
+}
+/** §15.4: a whole-shift request longer than STAFF_MAX_SHIFT_HOURS. */
+export function staffCorrectionTooLong(maxHours: number): string {
+  return `整班補卡不能超過 ${maxHours} 小時`;
 }
 export function staffAdminCorrectionNotice(
   displayId: string,
   name: string,
   atIso: string,
-  kind: PunchKind,
+  kind: CorrectionKind,
+  endIso: string | null = null,
 ): string {
-  return `補卡申請 ${displayId} ${name} ${staffCorrectionWhat(atIso, kind)}。核准請回：核准 ${displayId}，駁回請回：駁回 ${displayId}`;
+  return `補卡申請 ${displayId} ${name} ${staffCorrectionWhat(atIso, kind, endIso)}。核准請回：核准 ${displayId}，駁回請回：駁回 ${displayId}`;
 }
 export function staffCorrectionApprovedDm(displayId: string): string {
   return `補卡 ${displayId} 已核准`;
@@ -498,11 +527,12 @@ export function staffApprovedCorrection(
   displayId: string,
   name: string,
   atIso: string,
-  kind: PunchKind,
+  kind: CorrectionKind,
   pairedDisplayId: string | null,
+  endIso: string | null = null,
 ): string {
   const paired = pairedDisplayId ? `，同時套用 ${pairedDisplayId}` : '';
-  return `已核准補卡 ${displayId}（${name} ${staffCorrectionWhat(atIso, kind)}）${paired}`;
+  return `已核准補卡 ${displayId}（${name} ${staffCorrectionWhat(atIso, kind, endIso)}）${paired}`;
 }
 export function staffRejectedCorrection(displayId: string, name: string): string {
   return `已駁回補卡 ${displayId}（${name}）`;
@@ -511,34 +541,98 @@ export function staffAdminCorrectionApplied(
   employeeDisplayId: string,
   name: string,
   atIso: string,
-  kind: PunchKind,
+  kind: CorrectionKind,
   requestDisplayId: string,
+  endIso: string | null = null,
 ): string {
-  return `已代補 ${employeeDisplayId} ${name} ${staffCorrectionWhat(atIso, kind)}（${requestDisplayId}）`;
+  return `已代補 ${employeeDisplayId} ${name} ${staffCorrectionWhat(atIso, kind, endIso)}（${requestDisplayId}）`;
 }
-export function staffCorrectionFailed(
-  displayId: string,
-  reason: 'noOpenShift' | 'overlap' | 'exceedsMaxHours',
-  conflict: { displayId: string; startAt: string; endAt: string | null } | null,
+
+export type StaffCorrectionFailureReason = 'noOpenShift' | 'overlap' | 'exceedsMaxHours';
+export interface StaffConflictView {
+  displayId: string;
+  startAt: string;
+  endAt: string | null;
+}
+
+/** §15.1 reason wording, shared by the admin answer and the applicant notice. */
+function staffCorrectionReason(
+  reason: StaffCorrectionFailureReason,
+  conflict: StaffConflictView | null,
   maxHours: number,
 ): string {
-  const head = `補卡 ${displayId} 無法套用：`;
   switch (reason) {
     case 'noOpenShift':
-      return `${head}找不到可配對的上班紀錄`;
+      return '找不到可配對的上班紀錄';
     case 'exceedsMaxHours':
-      return `${head}該班會超過 ${maxHours} 小時`;
-    case 'overlap': {
-      const c = conflict
-        ? `（${conflict.displayId} ${staffDayTime(conflict.startAt)}–${conflict.endAt ? staffTime(conflict.endAt) : '未下班'}）`
-        : '';
-      return `${head}與其他班重疊${c}`;
-    }
+      return `超過 ${maxHours} 小時`;
+    case 'overlap':
+      return conflict
+        ? `和 ${conflict.displayId}（${staffSpan(conflict.startAt, conflict.endAt)}）重疊`
+        : '和其他班重疊';
   }
 }
+/** Admin answer when an approval / 代補 cannot be applied. */
+export function staffCorrectionFailed(
+  displayId: string,
+  reason: StaffCorrectionFailureReason,
+  conflict: StaffConflictView | null,
+  maxHours: number,
+): string {
+  return `補卡 ${displayId} 無法套用：${staffCorrectionReason(reason, conflict, maxHours)}`;
+}
+/**
+ * §15.1 notice to the applicant of a failed approval. A 下班 without a 上班 stays waiting for one
+ * (§6), so it is told the pairing will happen later instead of being sent to the admin.
+ */
+export function staffCorrectionFailedDm(
+  displayId: string,
+  reason: StaffCorrectionFailureReason,
+  conflict: StaffConflictView | null,
+  maxHours: number,
+): string {
+  const head = `補卡 ${displayId} 無法套用：${staffCorrectionReason(reason, conflict, maxHours)}`;
+  return reason === 'noOpenShift' ? `${head}，等補上班紀錄後會自動配對` : `${head}，請聯絡管理員`;
+}
+/** Group fallback of `staffCorrectionFailedDm`. */
+export function staffCorrectionFailedGroup(
+  name: string,
+  displayId: string,
+  reason: StaffCorrectionFailureReason,
+  conflict: StaffConflictView | null,
+  maxHours: number,
+): string {
+  return `${name} ${staffCorrectionFailedDm(displayId, reason, conflict, maxHours)}`;
+}
+
+const STAFF_CORRECTION_STATUS_LABEL: Record<string, string> = {
+  approved: '已核准',
+  rejected: '已駁回',
+  failed: '核准失敗',
+  cancelled: '已取消',
+};
+/** 核准 / 駁回 of a request that is no longer pending; cancelled → `R001 已取消` (§15.3). */
 export function staffCorrectionAlreadyDecided(displayId: string, status: string): string {
-  const label = status === 'approved' ? '已核准' : status === 'rejected' ? '已駁回' : '核准失敗';
-  return `${displayId} 已處理過（${label}）`;
+  if (status === 'cancelled') return `${displayId} 已取消`;
+  return `${displayId} 已處理過（${STAFF_CORRECTION_STATUS_LABEL[status] ?? status}）`;
+}
+/** §15.3 `取消 R001` done. */
+export function staffCorrectionCancelled(
+  displayId: string,
+  atIso: string,
+  kind: CorrectionKind,
+  endIso: string | null = null,
+): string {
+  return `已取消補卡申請 ${displayId}（${staffCorrectionWhat(atIso, kind, endIso)}）`;
+}
+/** §15.3 `取消 R001` on a request that is no longer pending. */
+export function staffCorrectionNotCancellable(displayId: string, status: string): string {
+  return `${displayId} ${STAFF_CORRECTION_STATUS_LABEL[status] ?? status}，無法取消`;
+}
+
+/** §15.2: extra answer line when a change touches a month that already has a payroll run. */
+export function staffSettledHint(month: Month): string {
+  return `${month} 已結算，請輸入：結算 ${month} 重新結算`;
 }
 
 // --- §7 wages / admin ops ---
@@ -571,6 +665,42 @@ export function staffShiftAlreadyDeleted(shiftDisplayId: string): string {
   return `${shiftDisplayId} 已刪除過`;
 }
 
+/** §15.2 `修改 S0123` done: `已修改 S0123 王小明 11/12 09:00–18:30（9 小時 30 分）`. */
+export function staffShiftEdited(
+  shiftDisplayId: string,
+  name: string,
+  startIso: string,
+  endIso: string | null,
+  minutes: number | null,
+): string {
+  const length = minutes !== null ? `（${staffDuration(minutes)}）` : '';
+  return `已修改 ${shiftDisplayId} ${name} ${staffSpan(startIso, endIso)}${length}`;
+}
+export function staffShiftEditDeleted(shiftDisplayId: string): string {
+  return `${shiftDisplayId} 已刪除，無法修改`;
+}
+/** §15.2 refused edit (nothing written). */
+export function staffShiftEditRefused(
+  shiftDisplayId: string,
+  reason: 'notAfterStart' | 'exceedsMaxHours' | 'future' | 'tooOld' | 'overlap',
+  conflict: StaffConflictView | null,
+  maxHours: number,
+): string {
+  const head = `無法修改 ${shiftDisplayId}：`;
+  switch (reason) {
+    case 'notAfterStart':
+      return `${head}上班時間須早於下班時間`;
+    case 'exceedsMaxHours':
+      return `${head}該班會超過 ${maxHours} 小時`;
+    case 'future':
+      return `${head}不能改成未來的時間`;
+    case 'tooOld':
+      return `${head}只能修改 31 天內的打卡`;
+    case 'overlap':
+      return `${head}${staffCorrectionReason('overlap', conflict, maxHours)}`;
+  }
+}
+
 const STAFF_STATUS_LABEL: Record<string, string> = {
   pending: '申請中',
   active: '啟用',
@@ -594,7 +724,13 @@ export function staffEmployeeList(
 
 export interface StaffPendingView {
   registrations: { displayId: string; name: string }[];
-  corrections: { displayId: string; name: string; at: string; kind: PunchKind }[];
+  corrections: {
+    displayId: string;
+    name: string;
+    at: string;
+    kind: CorrectionKind;
+    endAt: string | null;
+  }[];
   openShifts: {
     shiftDisplayId: string;
     employeeDisplayId: string;
@@ -613,7 +749,7 @@ export function staffPendingList(p: StaffPendingView): string[] {
   if (p.corrections.length > 0) {
     lines.push('補卡申請：');
     for (const c of p.corrections) {
-      lines.push(`${c.displayId} ${c.name} ${staffCorrectionWhat(c.at, c.kind)}`);
+      lines.push(`${c.displayId} ${c.name} ${staffCorrectionWhat(c.at, c.kind, c.endAt)}`);
     }
   }
   if (p.openShifts.length > 0) {
@@ -753,12 +889,60 @@ export function staffPayrollSummary(
       }
     }
     for (const c of result.pending.corrections) {
-      lines.push(`補卡申請 ${c.displayId} ${c.name} ${staffCorrectionWhat(c.at, c.kind)}`);
+      lines.push(
+        `補卡申請 ${c.displayId} ${c.name} ${staffCorrectionWhat(c.at, c.kind, c.endAt ?? null)}`,
+      );
     }
     for (const r of result.pending.registrations) {
       lines.push(`註冊申請 ${r.displayId} ${r.name}`);
     }
     lines.push(`處理後可輸入：結算 ${month} 重新結算`);
+  }
+  return lines;
+}
+
+// --- §15.5 pending-correction reminder ---
+
+/** At most this many requests are listed per reminder part; the rest are 「另有 N 筆」. */
+export const STAFF_REMINDER_MAX_ITEMS = 10;
+
+export interface StaffReminderItem {
+  displayId: string;
+  name: string;
+  at: string;
+  kind: CorrectionKind;
+  endAt: string | null;
+}
+
+function staffReminderList(items: StaffReminderItem[]): string {
+  const shown = items
+    .slice(0, STAFF_REMINDER_MAX_ITEMS)
+    .map((i) => `${i.displayId} ${i.name} ${staffCorrectionWhat(i.at, i.kind, i.endAt)}`);
+  const rest = items.length - STAFF_REMINDER_MAX_ITEMS;
+  if (rest > 0) shown.push(`另有 ${rest} 筆`);
+  return shown.join('；');
+}
+
+/**
+ * The daily admin reminder as lines (one message): requests pending longer than `staleDays`,
+ * and on the day before payday the previous month's pending requests. Empty parts are left out.
+ */
+export function staffCorrectionReminder(r: {
+  staleDays: number;
+  stale: StaffReminderItem[];
+  payday: { date: LocalDate; month: Month; items: StaffReminderItem[] } | null;
+}): string[] {
+  const lines: string[] = [];
+  if (r.stale.length > 0) {
+    lines.push(
+      `有 ${r.stale.length} 筆補卡待處理超過 ${r.staleDays} 天：${staffReminderList(r.stale)}。輸入：待處理`,
+    );
+  }
+  if (r.payday && r.payday.items.length > 0) {
+    const { date, month, items } = r.payday;
+    lines.push(
+      `明天 ${staffDay(date)} 發薪，${month} 還有 ${items.length} 筆補卡待處理：${staffReminderList(items)}。處理後請輸入：結算 ${month}`,
+    );
   }
   return lines;
 }

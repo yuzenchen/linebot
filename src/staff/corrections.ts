@@ -10,10 +10,12 @@
  *   - otherwise → create an open shift at T.
  * - `out` at X: close the latest open shift starting before X; none → `noOpenShift`; longer than
  *   STAFF_MAX_SHIFT_HOURS → `exceedsMaxHours`.
+ * - `shift` from T to E (§15.4): create one completed shift [T, E]; it never pairs with or
+ *   changes another shift or request. Longer than the limit → `exceedsMaxHours`.
  * - The changed shift must not overlap any other live shift (`overlap`). For this check an open
  *   shift spans [start, min(start + max hours, now)] (at least one millisecond).
  */
-import type { PunchKind } from './commands.js';
+import type { CorrectionKind } from './commands.js';
 import { taipeiDate } from './time.js';
 
 export type CorrectionFailureReason = 'noOpenShift' | 'overlap' | 'exceedsMaxHours';
@@ -30,8 +32,10 @@ export interface PlanOutRequest {
 }
 
 export interface PlanInput {
-  kind: PunchKind;
+  kind: CorrectionKind;
   at: Date;
+  /** End of a `shift` request (required for `shift`, ignored otherwise). */
+  endAt?: Date | null;
   /** Live (not deleted) shifts of the employee. */
   shifts: PlanShift[];
   /** Pairable `下班` requests of the employee (ignored for `out`). */
@@ -79,10 +83,35 @@ function fail(reason: CorrectionFailureReason, conflictShiftId: number | null = 
   return { ok: false as const, reason, conflictShiftId };
 }
 
+/**
+ * First live shift (other than `excludeId`) overlapping `candidate`, using the open-shift interval
+ * rule above for open shifts on either side; null when none. Used by `修改 S0123` (§15.2).
+ */
+export function findShiftConflict(
+  candidate: Omit<PlanShift, 'id'>,
+  shifts: PlanShift[],
+  excludeId: number | null,
+  maxShiftHours: number,
+  now: Date,
+): number | null {
+  const maxMs = maxShiftHours * 3_600_000;
+  const interval = intervalOf({ id: -1, ...candidate }, maxMs, now.getTime());
+  return findConflict(interval, shifts, excludeId, maxMs, now.getTime());
+}
+
 export function planCorrection(input: PlanInput): CorrectionPlan {
   const maxMs = input.maxShiftHours * 3_600_000;
   const now = input.now.getTime();
   const at = input.at.getTime();
+
+  if (input.kind === 'shift') {
+    if (!input.endAt) throw new Error('planCorrection: shift needs endAt');
+    const end = input.endAt.getTime();
+    if (end - at > maxMs) return fail('exceedsMaxHours');
+    const conflict = findConflict({ start: at, end }, input.shifts, null, maxMs, now);
+    if (conflict !== null) return fail('overlap', conflict);
+    return { ok: true, op: 'create', startAt: input.at, endAt: input.endAt, pairedRequestId: null };
+  }
 
   if (input.kind === 'out') {
     const open = input.shifts

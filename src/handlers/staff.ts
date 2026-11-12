@@ -1,13 +1,15 @@
 /**
- * Staff bot conversation (SPEC-STAFF §3–9). Fixed-format commands only (no model):
+ * Staff bot conversation (SPEC-STAFF §3–9, §15). Fixed-format commands only (no model):
  *
  * - Group / room (only ids in STAFF_GROUP_IDS; others are logged and ignored): 註冊, 上班, 下班,
- *   補卡. Any other text is ignored; a known group keyword with bad arguments gets a usage hint.
- * - DM: employee commands (我的打卡, 我的薪資, 補卡, 說明) and, for STAFF_ADMIN_USER_IDS, the §9
- *   admin commands. Admin commands from anyone else are treated as unknown.
+ *   補卡, 取消. Any other text is ignored; 註冊 / 補卡 with bad arguments get a usage hint (a
+ *   malformed 取消 stays silent: the word is common in chat).
+ * - DM: employee commands (我的打卡, 我的薪資, 補卡, 取消, 說明) and, for STAFF_ADMIN_USER_IDS,
+ *   the §9 / §15 admin commands. Admin commands from anyone else are treated as unknown.
  *
- * Notifications (requests → every admin, decisions → applicant with group fallback) go through
- * the messenger, which never throws; every handled message gets a fallback reply on failure.
+ * Notifications (requests → every admin, decisions and failed approvals → applicant with group
+ * fallback) go through the messenger, which never throws; every handled message gets a fallback
+ * reply on failure.
  */
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
@@ -15,12 +17,22 @@ import type { Repos } from '../db/repos.js';
 import { now as clockNow } from '../db/time.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
-import { type CommandKeyword, parseStaffCommand, type StaffCommand } from '../staff/commands.js';
+import {
+  type CommandKeyword,
+  type CorrectionTime,
+  parseStaffCommand,
+  type StaffCommand,
+} from '../staff/commands.js';
 import { displayCorrectionId, displayEmployeeId, displayShiftId } from '../staff/ids.js';
 import { createStaffMessenger } from '../staff/messenger.js';
 import type { PayrollReporter } from '../staff/payrollReport.js';
-import type { RequestCorrectionOutcome, StaffService } from '../staff/service.js';
-import { taipeiDate, taipeiMonth } from '../staff/time.js';
+import type {
+  CancelCorrectionOutcome,
+  CorrectionInput,
+  RequestCorrectionOutcome,
+  StaffService,
+} from '../staff/service.js';
+import { type Month, taipeiDate, taipeiMonth } from '../staff/time.js';
 import {
   staffAdminCorrectionApplied,
   staffAdminCorrectionNotice,
@@ -34,11 +46,17 @@ import {
   staffClockedOut,
   staffCorrectionAlreadyDecided,
   staffCorrectionApprovedDm,
+  staffCorrectionCancelled,
+  type StaffConflictView,
   staffCorrectionDecisionGroup,
   staffCorrectionDuplicate,
   staffCorrectionFailed,
+  staffCorrectionFailedDm,
+  staffCorrectionFailedGroup,
+  staffCorrectionNotCancellable,
   staffCorrectionRejectedDm,
   staffCorrectionRequested,
+  staffCorrectionTooLong,
   staffDisabled,
   staffEmployeeList,
   staffMyShiftsHeader,
@@ -54,8 +72,12 @@ import {
   staffRegistrationRejectedDm,
   staffRejectedCorrection,
   staffRejectedRegistration,
+  staffSettledHint,
   staffShiftAlreadyDeleted,
   staffShiftDeleted,
+  staffShiftEditDeleted,
+  staffShiftEdited,
+  staffShiftEditRefused,
   staffShiftRecords,
   staffShiftRecordsHeader,
   staffShiftsOnDay,
@@ -67,18 +89,39 @@ import {
 } from '../texts.js';
 import type { GroupTextContext, TextMessageContext } from './dispatcher.js';
 
-/** Keywords that do something in a group; other keywords there are ordinary chat. */
+/**
+ * Keywords whose bad arguments get a usage hint in a group; other keywords there are ordinary
+ * chat. 取消 works in a group but a malformed one is ignored (common word in chat).
+ */
 const GROUP_KEYWORDS = new Set(['註冊', '補卡']);
 /** Keywords any DM user may use (malformed → usage); the rest are admin-only. */
-const EMPLOYEE_DM_KEYWORDS = new Set(['補卡', '我的打卡', '我的薪資', '說明', '註冊']);
+const EMPLOYEE_DM_KEYWORDS = new Set(['補卡', '取消', '我的打卡', '我的薪資', '說明', '註冊']);
 const EMPLOYEE_DM_TYPES = new Set<StaffCommand['type']>([
   'punch',
   'register',
   'correction',
+  'cancelCorrection',
   'myShifts',
   'myPay',
   'help',
 ]);
+
+function correctionInput(c: CorrectionTime): CorrectionInput {
+  return c.kind === 'shift'
+    ? { kind: 'shift', at: c.at, endAt: c.endAt }
+    : { kind: c.kind, at: c.at };
+}
+
+function conflictView(
+  s: { id: number; start_at: string; end_at: string | null } | null,
+): StaffConflictView | null {
+  return s ? { displayId: displayShiftId(s.id), startAt: s.start_at, endAt: s.end_at } : null;
+}
+
+/** §15.2 settled-month hint lines. */
+function settledLines(months: Month[]): string[] {
+  return months.map(staffSettledHint);
+}
 
 export interface StaffHandlerDeps {
   service: StaffService;
@@ -128,29 +171,52 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         return staffTexts.correctionFuture;
       case 'tooOld':
         return staffTexts.correctionTooOld;
+      case 'tooLong':
+        return staffCorrectionTooLong(config.STAFF_MAX_SHIFT_HOURS);
       case 'duplicate':
         return staffCorrectionDuplicate(
           displayCorrectionId(outcome.request.id),
           outcome.request.at,
           outcome.request.kind,
+          outcome.request.end_at,
         );
       case 'requested': {
-        const id = displayCorrectionId(outcome.request.id);
+        const { request } = outcome;
+        const id = displayCorrectionId(request.id);
         if (!outcome.resent) {
           await messenger.notifyAdmins(
             [
               staffAdminCorrectionNotice(
                 id,
                 outcome.employee.name,
-                outcome.request.at,
-                outcome.request.kind,
+                request.at,
+                request.kind,
+                request.end_at,
               ),
             ],
             'staff_correction_request',
           );
         }
-        return staffCorrectionRequested(id, outcome.request.at, outcome.request.kind);
+        return staffCorrectionRequested(id, request.at, request.kind, request.end_at);
       }
+    }
+  }
+
+  /** §15.3 `取消 R001` (group or DM). Admins are not notified. */
+  function cancelAnswer(outcome: CancelCorrectionOutcome, requestId: number): string {
+    const id = displayCorrectionId(requestId);
+    switch (outcome.kind) {
+      case 'notFound':
+        return staffNotFound(id);
+      case 'notPending':
+        return staffCorrectionNotCancellable(id, outcome.request.status);
+      case 'cancelled':
+        return staffCorrectionCancelled(
+          id,
+          outcome.request.at,
+          outcome.request.kind,
+          outcome.request.end_at,
+        );
     }
   }
 
@@ -210,9 +276,11 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         break;
       }
       case 'correction': {
-        const r = service.requestCorrection(userId, { kind: cmd.kind, at: cmd.at }, groupId, at);
+        const r = service.requestCorrection(userId, correctionInput(cmd), groupId, at);
         return [await correctionRequest(r, true)];
       }
+      case 'cancelCorrection':
+        return [cancelAnswer(service.cancelCorrection(userId, cmd.requestId, at), cmd.requestId)];
       case 'malformed':
         return GROUP_KEYWORDS.has(cmd.keyword) ? [staffTexts.usage[cmd.keyword]] : null;
       default:
@@ -266,9 +334,11 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
       case 'help':
         return helpLines(userId);
       case 'correction': {
-        const r = service.requestCorrection(userId, { kind: cmd.kind, at: cmd.at }, null, at);
+        const r = service.requestCorrection(userId, correctionInput(cmd), null, at);
         return [await correctionRequest(r, false)];
       }
+      case 'cancelCorrection':
+        return [cancelAnswer(service.cancelCorrection(userId, cmd.requestId, at), cmd.requestId)];
       case 'myShifts':
       case 'myPay': {
         const r = service.myRecords(userId, cmd.month);
@@ -320,6 +390,7 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
             name: c.employee.name,
             at: c.request.at,
             kind: c.request.kind,
+            endAt: c.request.end_at,
           })),
           openShifts: p.openShifts.map((s) => ({
             shiftDisplayId: displayShiftId(s.shift.id),
@@ -367,6 +438,16 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         if (r.kind === 'alreadyDecided')
           return [staffCorrectionAlreadyDecided(id, r.request.status)];
         if (r.kind === 'failed') {
+          // §15.1: the applicant hears about it too, through the same channel as an approval.
+          const max = config.STAFF_MAX_SHIFT_HOURS;
+          const conflict = conflictView(r.conflictShift);
+          await messenger.dmOrGroup(
+            r.employee.user_id,
+            staffCorrectionFailedDm(id, r.reason, conflict, max),
+            r.request.group_id,
+            staffCorrectionFailedGroup(r.employee.name, id, r.reason, conflict, max),
+            'staff_correction_failed',
+          );
           return [failureText(id, r)];
         }
         for (const req of [r.request, r.pairedRequest]) {
@@ -387,6 +468,7 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
             r.request.at,
             r.request.kind,
             r.pairedRequest ? displayCorrectionId(r.pairedRequest.id) : null,
+            r.request.end_at,
           ),
         ];
       }
@@ -407,12 +489,7 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
       }
       case 'adminCorrection': {
         const eid = displayEmployeeId(cmd.employeeId);
-        const r = service.adminCorrection(
-          userId,
-          cmd.employeeId,
-          { kind: cmd.kind, at: cmd.at },
-          at,
-        );
+        const r = service.adminCorrection(userId, cmd.employeeId, correctionInput(cmd), at);
         switch (r.kind) {
           case 'notFound':
             return [staffNotFound(eid)];
@@ -422,6 +499,8 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
             return [staffTexts.correctionFuture];
           case 'tooOld':
             return [staffTexts.correctionTooOld];
+          case 'tooLong':
+            return [staffCorrectionTooLong(config.STAFF_MAX_SHIFT_HOURS)];
           case 'failed':
             return [failureText(displayCorrectionId(r.request.id), r)];
           case 'applied':
@@ -432,7 +511,40 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
                 r.request.at,
                 r.request.kind,
                 displayCorrectionId(r.request.id),
+                r.request.end_at,
               ),
+              ...settledLines(r.settledMonths),
+            ];
+        }
+        break;
+      }
+      case 'editShift': {
+        const id = displayShiftId(cmd.shiftId);
+        const r = service.editShift(
+          userId,
+          cmd.shiftId,
+          { kind: cmd.kind, date: cmd.date, hour: cmd.hour, minute: cmd.minute },
+          at,
+        );
+        switch (r.kind) {
+          case 'notFound':
+            return [staffNotFound(id)];
+          case 'deleted':
+            return [staffShiftEditDeleted(id)];
+          case 'refused':
+            return [
+              staffShiftEditRefused(
+                id,
+                r.reason,
+                conflictView(r.conflictShift),
+                config.STAFF_MAX_SHIFT_HOURS,
+              ),
+            ];
+          case 'edited':
+            // §15.2: the employee is not notified (they can check with 我的打卡).
+            return [
+              staffShiftEdited(id, r.employee.name, r.shift.start_at, r.shift.end_at, r.minutes),
+              ...settledLines(r.settledMonths),
             ];
         }
         break;
@@ -462,7 +574,10 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         const r = service.deleteShift(userId, cmd.shiftId, at);
         if (r.kind === 'notFound') return [staffNotFound(id)];
         if (r.kind === 'alreadyDeleted') return [staffShiftAlreadyDeleted(id)];
-        return [staffShiftDeleted(id, r.employee.name, r.shift.start_at, r.shift.end_at)];
+        return [
+          staffShiftDeleted(id, r.employee.name, r.shift.start_at, r.shift.end_at),
+          ...settledLines(r.settledMonths),
+        ];
       }
       case 'disableEmployee':
       case 'enableEmployee': {
@@ -521,11 +636,10 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
       conflictShift: { id: number; start_at: string; end_at: string | null } | null;
     },
   ): string {
-    const c = r.conflictShift;
     return staffCorrectionFailed(
       id,
       r.reason,
-      c ? { displayId: displayShiftId(c.id), startAt: c.start_at, endAt: c.end_at } : null,
+      conflictView(r.conflictShift),
       config.STAFF_MAX_SHIFT_HOURS,
     );
   }

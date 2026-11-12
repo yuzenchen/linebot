@@ -77,6 +77,52 @@ describe('parseStaffCommand: employee commands', () => {
     }
   });
 
+  it('parses a whole-shift 補卡 (§15.4), crossing midnight when the end is not after the start', () => {
+    expect(p('補卡 11/12 09:00-18:00')).toEqual({
+      type: 'correction',
+      date: '2026-11-12',
+      time: '09:00',
+      endTime: '18:00',
+      at: new Date('2026-11-12T01:00:00Z'),
+      endAt: new Date('2026-11-12T10:00:00Z'),
+      kind: 'shift',
+    });
+    expect(p('補卡 11/11 22:00~02:00')).toMatchObject({
+      kind: 'shift',
+      at: new Date('2026-11-11T14:00:00Z'),
+      endAt: new Date('2026-11-11T18:00:00Z'), // 11/12 02:00 Taipei
+    });
+    expect(p('補卡 11/11 9:00 - 9:00')).toMatchObject({
+      time: '09:00',
+      endAt: new Date('2026-11-12T01:00:00Z'), // same time → next day (24 h, refused later)
+    });
+    expect(p('補卡 １１/１１ ０９：００～１８：００')).toMatchObject({ kind: 'shift' });
+    expect(p('補卡 11/11 09:00〜18:00')).toMatchObject({ kind: 'shift' });
+    expect(p('補卡 E002 11/11 09:00-18:00')).toMatchObject({
+      type: 'adminCorrection',
+      employeeId: 2,
+      kind: 'shift',
+      endTime: '18:00',
+    });
+    for (const t of [
+      '補卡 11/12 09:00-',
+      '補卡 11/12 09:00-24:00',
+      '補卡 11/12 09:00-18:00 上班',
+      '補卡 11/12 09:00/18:00',
+      '補卡 E001 11/12 09:00-1800',
+    ]) {
+      expect(p(t)).toEqual({ type: 'malformed', keyword: '補卡' });
+    }
+  });
+
+  it('parses 取消 R001 (§15.3)', () => {
+    expect(p('取消 R001')).toEqual({ type: 'cancelCorrection', requestId: 1 });
+    expect(p('取消 r12')).toEqual({ type: 'cancelCorrection', requestId: 12 });
+    expect(p('取消')).toEqual({ type: 'malformed', keyword: '取消' });
+    expect(p('取消 明天的會')).toEqual({ type: 'malformed', keyword: '取消' });
+    expect(p('取消了')).toBeNull();
+  });
+
   it('parses 我的打卡 / 我的薪資 with optional month', () => {
     expect(p('我的打卡')).toEqual({ type: 'myShifts', month: '2026-11', explicitMonth: false });
     expect(p('我的打卡 2026-10')).toEqual({
@@ -134,6 +180,37 @@ describe('parseStaffCommand: admin commands', () => {
       kind: 'out',
     });
     expect(p('補卡 E001 11/12 18:00')).toEqual({ type: 'malformed', keyword: '補卡' });
+  });
+
+  it('parses 修改 S0123 上班|下班 [date] HH:MM (§15.2)', () => {
+    expect(p('修改 S0123 上班 09:00')).toEqual({
+      type: 'editShift',
+      shiftId: 123,
+      kind: 'in',
+      date: null,
+      time: '09:00',
+      hour: 9,
+      minute: 0,
+    });
+    expect(p('修改 s5 下班 18:30')).toMatchObject({ shiftId: 5, kind: 'out', date: null });
+    expect(p('修改 S0123 下班 11/13 2:00')).toMatchObject({
+      kind: 'out',
+      date: '2025-11-13', // 11/13 is after today (11/12) → last year, like 補卡
+      time: '02:00',
+    });
+    expect(p('修改 S0123 下班 11/11 02:00')).toMatchObject({ date: '2026-11-11' });
+    for (const t of [
+      '修改',
+      '修改 S0123',
+      '修改 S0123 上班',
+      '修改 S0123 午休 09:00',
+      '修改 E001 上班 09:00',
+      '修改 S0123 上班 25:00',
+      '修改 S0123 上班 11/31 09:00',
+      '修改 S0123 上班 11/12 09:00 多的',
+    ]) {
+      expect(p(t)).toEqual({ type: 'malformed', keyword: '修改' });
+    }
   });
 
   it('parses list / delete / status / records / payroll commands', () => {
