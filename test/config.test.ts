@@ -130,6 +130,26 @@ describe('loadConfig', () => {
     }
   });
 
+  it('keeps the §16 backup settings optional; the URL must be a URL', () => {
+    const one = { ...required, BOT_PROFILE: 'staff', STAFF_ADMIN_USER_IDS: 'Ua' };
+    const off = loadConfig({ ...one, STAFF_BACKUP_SHEET_URL: '', STAFF_BACKUP_TOKEN: ' ' });
+    expect(off.STAFF_BACKUP_SHEET_URL).toBeUndefined();
+    expect(off.STAFF_BACKUP_TOKEN).toBeUndefined();
+    expect(off.STAFF_BACKUP_HOUR).toBe(1);
+    expect(loadConfig({ ...one, STAFF_BACKUP_HOUR: '0' }).STAFF_BACKUP_HOUR).toBe(0);
+    expect(() => loadConfig({ ...one, STAFF_BACKUP_HOUR: '24' })).toThrow(/STAFF_BACKUP_HOUR/);
+    const on = loadConfig({
+      ...one,
+      STAFF_BACKUP_SHEET_URL: 'https://script.google.com/macros/s/x/exec',
+      STAFF_BACKUP_TOKEN: 't',
+    });
+    expect(on.STAFF_BACKUP_SHEET_URL).toBe('https://script.google.com/macros/s/x/exec');
+    expect(on.STAFF_BACKUP_TOKEN).toBe('t');
+    expect(() => loadConfig({ ...one, STAFF_BACKUP_SHEET_URL: 'not a url' })).toThrow(
+      /STAFF_BACKUP_SHEET_URL/,
+    );
+  });
+
   it('lists every invalid field', () => {
     expect(() => loadConfig({ PORT: 'abc' })).toThrow(
       /PORT[\s\S]*LINE_CHANNEL_SECRET[\s\S]*LINE_CHANNEL_ACCESS_TOKEN/,

@@ -140,6 +140,18 @@ export const configSchema = z.object({
   ),
   /** Day (1–28) of the following month when pay is issued; only used in notices. */
   STAFF_PAYDAY: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(28).default(15)),
+  /**
+   * §16 daily backup: the Apps Script web app URL of the backup Google Sheet. Treated like a
+   * password (never logged). The backup is on only when this and `STAFF_BACKUP_TOKEN` are set.
+   */
+  STAFF_BACKUP_SHEET_URL: z.preprocess(emptyToUndefined, z.url().optional()),
+  /** Shared token the Apps Script compares with its `TOKEN` script property. */
+  STAFF_BACKUP_TOKEN: optionalString,
+  /** Taipei hour (0–23) of the daily backup. */
+  STAFF_BACKUP_HOUR: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(0).max(23).default(1),
+  ),
 });
 
 /**

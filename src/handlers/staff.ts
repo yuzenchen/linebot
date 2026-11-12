@@ -5,7 +5,7 @@
  *   補卡, 取消. Any other text is ignored; 註冊 / 補卡 with bad arguments get a usage hint (a
  *   malformed 取消 stays silent: the word is common in chat).
  * - DM: employee commands (我的打卡, 我的薪資, 補卡, 取消, 說明) and, for STAFF_ADMIN_USER_IDS,
- *   the §9 / §15 admin commands. Admin commands from anyone else are treated as unknown.
+ *   the §9 / §15 / §16 admin commands. Admin commands from anyone else are treated as unknown.
  *
  * Notifications (requests → every admin, decisions and failed approvals → applicant with group
  * fallback) go through the messenger, which never throws; every handled message gets a fallback
@@ -25,7 +25,9 @@ import {
 } from '../staff/commands.js';
 import { displayCorrectionId, displayEmployeeId, displayShiftId } from '../staff/ids.js';
 import { createStaffMessenger } from '../staff/messenger.js';
+import type { StaffBackup } from '../staff/backup.js';
 import type { PayrollReporter } from '../staff/payrollReport.js';
+import { backupFailureOutstanding } from '../staff/scheduler.js';
 import type {
   CancelCorrectionOutcome,
   CorrectionInput,
@@ -41,6 +43,8 @@ import {
   staffAlreadyRegistered,
   staffApprovedCorrection,
   staffApprovedRegistration,
+  staffBackupDone,
+  staffBackupFailed,
   staffBelowMinimum,
   staffClockedIn,
   staffClockedOut,
@@ -126,6 +130,8 @@ function settledLines(months: Month[]): string[] {
 export interface StaffHandlerDeps {
   service: StaffService;
   reporter: PayrollReporter;
+  /** §16 backup; undefined when STAFF_BACKUP_SHEET_URL / STAFF_BACKUP_TOKEN are not both set. */
+  backup?: Pick<StaffBackup, 'run'>;
   replier: Pick<Replier, 'reply' | 'push' | 'replyOrPush'>;
   repos: Pick<Repos, 'users'>;
   config: Pick<
@@ -603,6 +609,25 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
           r.shifts,
           true,
         );
+      }
+      case 'backup': {
+        if (!deps.backup) return [staffTexts.backupNotConfigured];
+        // A failed scheduled streak was announced to every admin: they all hear it ended.
+        const outstanding = backupFailureOutstanding(service.repo);
+        const r = await deps.backup.run({
+          date: null,
+          triggeredBy: userId,
+          force: cmd.force,
+          now: at,
+        });
+        if (!r.ok) return [staffBackupFailed(r.failure)];
+        if (!outstanding) return [staffBackupDone(r.counts)];
+        await messenger.notifyAdmins(
+          [staffTexts.backupRecovered],
+          'staff_backup_recovered',
+          userId,
+        );
+        return [staffBackupDone(r.counts), staffTexts.backupRecovered];
       }
       case 'runPayroll':
         await reporter.run(cmd.month, userId, at, {

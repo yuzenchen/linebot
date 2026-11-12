@@ -68,7 +68,8 @@ export type CommandKeyword =
   | '打卡紀錄'
   | '結算'
   | '修改'
-  | '取消';
+  | '取消'
+  | '備份';
 
 export type StaffCommand =
   // --- employee ---
@@ -111,6 +112,8 @@ export type StaffCommand =
       hour: number;
       minute: number;
     }
+  /** §16 `備份` / `備份 強制` (force overwrites even when a tab would shrink). */
+  | { type: 'backup'; force: boolean }
   /** Known keyword with unusable arguments (bad date, missing wage, …). */
   | { type: 'malformed'; keyword: CommandKeyword };
 
@@ -133,6 +136,7 @@ const KEYWORDS = new Set<string>([
   '結算',
   '修改',
   '取消',
+  '備份',
 ]);
 
 /** Full-width ASCII (`１１／１２`, `０９：００`) → half-width. */
@@ -401,6 +405,11 @@ export function parseStaffCommand(text: string, now: Date): StaffCommand | null 
     case '取消': {
       const requestId = args.length === 1 ? parseCorrectionId(args[0]!) : null;
       return requestId ? { type: 'cancelCorrection', requestId } : malformed;
+    }
+    case '備份': {
+      if (args.length === 0) return { type: 'backup', force: false };
+      if (args.length === 1 && args[0] === '強制') return { type: 'backup', force: true };
+      return malformed;
     }
   }
 }

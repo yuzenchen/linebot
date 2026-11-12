@@ -13,14 +13,22 @@
  * when tomorrow is payday and the payroll month still has pending requests. Nothing qualifying →
  * the row is still recorded (`sent_at` null) and nothing is sent, so a day is checked once.
  * Earlier days are never caught up; requests never expire.
+ *
+ * §16 daily backup (`startBackupScheduler`), same pattern: once per Taipei day from STAFF_BACKUP_HOUR.
  */
 import type { Logger } from 'pino';
 import { now as clockNow } from '../db/time.js';
-import { staffCorrectionReminder, type StaffReminderItem } from '../texts.js';
+import {
+  staffBackupScheduledFailed,
+  staffCorrectionReminder,
+  type StaffReminderItem,
+  staffTexts,
+} from '../texts.js';
+import type { BackupRunResult, StaffBackup } from './backup.js';
 import { displayCorrectionId } from './ids.js';
 import type { StaffMessenger } from './messenger.js';
 import type { PayrollReport, PayrollReporter } from './payrollReport.js';
-import type { CorrectionRow, EmployeeRow } from './repo.js';
+import type { CorrectionRow, EmployeeRow, StaffRepo } from './repo.js';
 import { PAYROLL_SCHEDULE_ACTOR, type StaffService } from './service.js';
 import {
   addDays,
@@ -246,3 +254,103 @@ export function startReminderScheduler(deps: ReminderSchedulerDeps) {
 }
 
 export type ReminderScheduler = ReturnType<typeof startReminderScheduler>;
+
+// ------------------------------------------------------------------ §16 daily backup
+
+/** A failed scheduled backup is retried this long after the previous attempt started. */
+export const BACKUP_RETRY_MS = 60 * 60_000;
+
+/**
+ * True while a streak of failed scheduled backups is open: the newest failed scheduled attempt is
+ * newer than the newest success (scheduled or manual). Admins were told 「每日備份失敗」 at the
+ * start of the streak and not yet 「備份已恢復」.
+ */
+export function backupFailureOutstanding(repo: StaffRepo): boolean {
+  const failed = repo.backups.latestScheduledFailure();
+  if (!failed) return false;
+  const ok = repo.backups.latestOk();
+  return !ok || ok.id < failed.id;
+}
+
+export interface BackupSchedulerDeps {
+  service: Pick<StaffService, 'repo'>;
+  backup: Pick<StaffBackup, 'run'>;
+  messenger: Pick<StaffMessenger, 'notifyAdmins'>;
+  /** STAFF_BACKUP_HOUR. */
+  hour: number;
+  intervalMs?: number;
+  retryMs?: number;
+  now?: () => Date;
+  log: Logger;
+}
+
+/**
+ * §16.1 / §16.5: one backup per Taipei day from `STAFF_BACKUP_HOUR`. Attempts are rows in
+ * `staff_backups` keyed by date (written before the POST), so a day with a successful scheduled
+ * backup never runs again, also after a restart; earlier days are not caught up. A failed day is
+ * retried every `retryMs` until it succeeds. Only the first failure of a streak (which may span
+ * days) DMs every admin; the success that ends the streak (scheduled here, or a manual `備份` in
+ * the handler) DMs 「備份已恢復」. Success otherwise only logs.
+ */
+export function startBackupScheduler(deps: BackupSchedulerDeps) {
+  const { service, backup, messenger, hour, log } = deps;
+  const now = deps.now ?? clockNow;
+  const intervalMs = deps.intervalMs ?? PAYROLL_CHECK_INTERVAL_MS;
+  const retryMs = deps.retryMs ?? BACKUP_RETRY_MS;
+  let running = false;
+
+  /** One check; never throws. Returns the attempt when one ran. */
+  async function checkOnce(): Promise<BackupRunResult | null> {
+    if (running) return null;
+    running = true;
+    try {
+      const at = now();
+      const date = dueReminderDate(at, hour);
+      if (!date) return null;
+      const { repo } = service;
+      const attempts = repo.backups.listForDate(date);
+      if (attempts.some((a) => a.ok === 1)) return null;
+      const last = attempts[attempts.length - 1];
+      if (last && at.getTime() - Date.parse(last.started_at) < retryMs) return null;
+      const outstanding = backupFailureOutstanding(repo);
+
+      const r = await backup.run({
+        date,
+        triggeredBy: PAYROLL_SCHEDULE_ACTOR,
+        force: false,
+        now: at,
+      });
+      if (r.ok) {
+        if (outstanding) {
+          await messenger.notifyAdmins([staffTexts.backupRecovered], 'staff_backup_recovered');
+        }
+      } else if (!outstanding) {
+        await messenger.notifyAdmins(
+          [staffBackupScheduledFailed(date, r.failure)],
+          'staff_backup_failed',
+        );
+      }
+      return r;
+    } catch (err) {
+      log.error({ err }, 'scheduled backup check failed');
+      return null;
+    } finally {
+      running = false;
+    }
+  }
+
+  const timer = setInterval(() => void checkOnce(), intervalMs);
+  timer.unref();
+  const initial = checkOnce();
+
+  return {
+    checkOnce,
+    /** The check started together with the scheduler (tests await it). */
+    initial,
+    stop(): void {
+      clearInterval(timer);
+    },
+  };
+}
+
+export type BackupScheduler = ReturnType<typeof startBackupScheduler>;

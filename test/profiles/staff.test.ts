@@ -1,6 +1,6 @@
 import type { webhook } from '@line/bot-sdk';
 import { pino } from 'pino';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import { NullGrokGateway } from '../../src/grok/gateway.js';
 import { createDispatcher } from '../../src/handlers/dispatcher.js';
@@ -33,7 +33,7 @@ interface Sent {
   text: string;
 }
 
-function setup(start: Date, env: Record<string, string> = {}) {
+function setup(start: Date, env: Record<string, string> = {}, fetchImpl?: typeof fetch) {
   const h = harness();
   const logLines: string[] = [];
   const logger = pino({ level: 'info' }, { write: (s: string) => void logLines.push(s) });
@@ -49,7 +49,7 @@ function setup(start: Date, env: Record<string, string> = {}) {
     health: fakeHealth(healthResult({ status: 'healthy' })),
     logger,
   };
-  const makeProfile = () => createStaffProfile(shared, { now: () => clock });
+  const makeProfile = () => createStaffProfile(shared, { now: () => clock, fetch: fetchImpl });
   const profile = makeProfile();
   const dispatch = createDispatcher({
     repos: h.repos,
@@ -843,5 +843,150 @@ describe('staff profile: correction improvements (§15)', () => {
     expect(staffTexts.adminHelp).toContain('補卡 E001 11/12 09:00-18:00');
     expect(staffTexts.adminHelp).toContain('修改 S0123 上班 09:00');
     expect(staffTexts.adminHelp).toContain('修改 S0123 下班 11/13 02:00');
+  });
+});
+
+describe('staff profile: Google Sheets backup (§16)', () => {
+  const BACKUP_ENV = {
+    STAFF_BACKUP_SHEET_URL: 'https://script.google.com/macros/s/SECRET-DEPLOYMENT/exec',
+    STAFF_BACKUP_TOKEN: 'secret-token',
+  };
+  const ok = (counts: Record<string, number> = {}) =>
+    vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ok: true, counts })));
+
+  it('is off unless both settings are set: 備份 answers 尚未設定備份試算表', async () => {
+    for (const env of [
+      {},
+      { STAFF_BACKUP_SHEET_URL: BACKUP_ENV.STAFF_BACKUP_SHEET_URL },
+      { STAFF_BACKUP_TOKEN: BACKUP_ENV.STAFF_BACKUP_TOKEN },
+    ]) {
+      const f = ok();
+      const s = setup(tp('2026-12-01', 9, 30), env, f);
+      await s.profile.start?.();
+      await s.profile.stop?.();
+      s.take();
+      await s.dm(A1, '備份');
+      expect(texts(s.take())).toEqual([`reply:${A1}:尚未設定備份試算表`]);
+      expect(f).not.toHaveBeenCalled();
+    }
+  });
+
+  it('備份 / 備份 強制 answer the admin with counts or the reason; others cannot use it', async () => {
+    const f = ok({ 員工: 1, 時薪: 1, 打卡: 1 });
+    const s = setup(tp('2026-11-12', 10), BACKUP_ENV, f);
+    const e = hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
+    addShift(s.seed, e.id, tp('2026-11-03', 9), tp('2026-11-03', 18));
+    const audits = s.seed.repo.audit.listAll().length;
+
+    await s.dm(A1, '備份');
+    expect(texts(s.take())).toEqual([
+      `reply:${A1}:備份完成：員工 1、時薪 1、打卡 1、補卡 0、結算 0、操作紀錄 ${audits}`,
+    ]);
+    const [url, init] = f.mock.calls[0]!;
+    expect(url).toBe(BACKUP_ENV.STAFF_BACKUP_SHEET_URL);
+    expect(JSON.parse(init!.body as string)).toMatchObject({ token: 'secret-token', force: false });
+
+    f.mockImplementation(
+      async () => new Response(JSON.stringify({ ok: false, error: 'shrink', table: '打卡' })),
+    );
+    await s.dm(A1, '備份');
+    expect(texts(s.take())).toEqual([
+      `reply:${A1}:備份失敗：筆數減少（打卡）。確定要覆寫請輸入：備份 強制`,
+    ]);
+
+    f.mockImplementation(async () => new Response('{"ok":true,"counts":{}}'));
+    await s.dm(A1, '備份 強制');
+    expect(s.take()[0]!.text).toMatch(/^備份完成：員工 1、/);
+    expect(JSON.parse(f.mock.calls[2]![1]!.body as string)).toMatchObject({ force: true });
+
+    await s.dm(A1, '備份 現在');
+    expect(texts(s.take())).toEqual([`reply:${A1}:格式：備份 或 備份 強制`]);
+
+    await s.dm('Uwang', '備份');
+    await s.group('Uwang', '備份');
+    expect(texts(s.take())).toEqual([`reply:Uwang:${staffTexts.unknownCommand}`]);
+    expect(f).toHaveBeenCalledTimes(3);
+    expect(s.seed.repo.backups.listAll().map((r) => [r.date, r.triggered_by, r.ok])).toEqual([
+      [null, A1, 1],
+      [null, A1, 0],
+      [null, A1, 1],
+    ]);
+    // The URL and token never reach the log.
+    const logged = s.logLines.join('');
+    expect(logged).not.toContain('SECRET-DEPLOYMENT');
+    expect(logged).not.toContain('secret-token');
+  });
+
+  it('runs daily from STAFF_BACKUP_HOUR on start, once a day, silently on success', async () => {
+    const f = ok();
+    const s = setup(tp('2026-11-13', 0, 59), BACKUP_ENV, f);
+    hire(s.seed, 'Uwang', '王小明', 200, tp('2026-11-01', 8));
+    await s.profile.start?.();
+    await s.profile.stop?.();
+    expect(f).not.toHaveBeenCalled(); // before 01:00
+
+    s.setClock(tp('2026-11-13', 1, 0));
+    const p = s.makeProfile();
+    await p.start?.();
+    await p.stop?.();
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(s.take().some((m) => m.text.includes('備份'))).toBe(false); // only the October payroll
+    const payload = JSON.parse(f.mock.calls[0]![1]!.body as string) as {
+      tables: { name: string; rows: unknown[][] }[];
+    };
+    expect(payload.tables.find((t) => t.name === '員工')!.rows).toHaveLength(1);
+    expect(s.seed.repo.backups.listAll().map((r) => [r.date, r.triggered_by, r.ok])).toEqual([
+      ['2026-11-13', 'schedule', 1],
+    ]);
+
+    s.setClock(tp('2026-11-13', 15, 0));
+    const again = s.makeProfile();
+    await again.start?.();
+    await again.stop?.();
+    expect(f).toHaveBeenCalledTimes(1);
+
+    // STAFF_BACKUP_HOUR moves the daily time.
+    const g = ok();
+    const t = setup(tp('2026-11-13', 2, 0), { ...BACKUP_ENV, STAFF_BACKUP_HOUR: '3' }, g);
+    await t.profile.start?.();
+    await t.profile.stop?.();
+    expect(g).not.toHaveBeenCalled();
+    t.setClock(tp('2026-11-13', 3, 0));
+    const t2 = t.makeProfile();
+    await t2.start?.();
+    await t2.stop?.();
+    expect(g).toHaveBeenCalledTimes(1);
+  });
+
+  it('a scheduled failure DMs every admin once; a manual 備份 that succeeds ends the streak', async () => {
+    const f = vi.fn<typeof fetch>(async () => {
+      throw new TypeError('fetch failed');
+    });
+    const s = setup(tp('2026-11-13', 1, 0), BACKUP_ENV, f);
+    await s.profile.start?.();
+    await s.profile.stop?.();
+    const fail = '11/13 每日備份失敗：網路錯誤。處理後可輸入：備份';
+    expect(texts(s.take())).toEqual([`push:${A1}:${fail}`, `push:${A2}:${fail}`]);
+
+    // The manual failure is answered only to the asking admin.
+    await s.dm(A1, '備份');
+    expect(texts(s.take())).toEqual([`reply:${A1}:備份失敗：網路錯誤`]);
+
+    f.mockImplementation(async () => new Response('{"ok":true,"counts":{}}'));
+    s.setClock(tp('2026-11-13', 1, 30));
+    await s.dm(A1, '備份');
+    expect(texts(s.take())).toEqual([
+      `push:${A2}:備份已恢復`,
+      `reply:${A1}:備份完成：員工 0、時薪 0、打卡 0、補卡 0、結算 0、操作紀錄 1\n備份已恢復`,
+    ]);
+    await s.dm(A1, '備份');
+    expect(texts(s.take())).toEqual([
+      `reply:${A1}:備份完成：員工 0、時薪 0、打卡 0、補卡 0、結算 0、操作紀錄 1`,
+    ]);
+  });
+
+  it('說明 lists 備份 for admins only', () => {
+    expect(staffTexts.adminHelp).toContain('備份、備份 強制');
+    expect(staffTexts.employeeHelp).not.toContain('備份');
   });
 });

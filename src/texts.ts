@@ -375,6 +375,7 @@ export const staffTexts = {
     '停用 E001、啟用 E001',
     '打卡紀錄 E001 2026-11',
     '結算 2026-11、結算 2026-11 通知員工',
+    '備份、備份 強制（寫入備份試算表）',
   ].join('\n'),
   /** Usage hint for a known keyword with bad arguments. */
   usage: {
@@ -396,9 +397,14 @@ export const staffTexts = {
     結算: '格式：結算 2026-11 或 結算 2026-11 通知員工',
     修改: '格式：修改 S0123 上班 09:00、修改 S0123 下班 18:30 或 修改 S0123 下班 11/13 02:00',
     取消: '格式：取消 R001',
+    備份: '格式：備份 或 備份 強制',
   } satisfies Record<CommandKeyword, string>,
   /** Extra line for admins who mistype 補卡. */
   adminCorrectionUsage: '代補：補卡 E001 11/12 18:00 下班 或 補卡 E001 11/12 09:00-18:00',
+  /** §16: `備份` while STAFF_BACKUP_SHEET_URL / STAFF_BACKUP_TOKEN are not both set. */
+  backupNotConfigured: '尚未設定備份試算表',
+  /** §16.5: a backup succeeded after a streak of failed scheduled backups. */
+  backupRecovered: '備份已恢復',
 } as const;
 
 // --- §4 registration ---
@@ -945,4 +951,140 @@ export function staffCorrectionReminder(r: {
     );
   }
   return lines;
+}
+
+// --- §16 monthly backup to Google Sheets ---
+
+/** Tab names and header rows of the backup sheet, in tab order (§16.2). */
+export const STAFF_BACKUP_SHEETS = {
+  employees: {
+    name: '員工',
+    header: ['編號', '名字', '狀態', 'LINE userId', '申請時間', '核准時間', '核准者'],
+  },
+  wages: {
+    name: '時薪',
+    header: ['員工編號', '名字', '時薪', '生效日', '設定者', '設定時間'],
+  },
+  shifts: {
+    name: '打卡',
+    header: [
+      '班號',
+      '員工編號',
+      '名字',
+      '上班',
+      '下班',
+      '分鐘',
+      '上班來源',
+      '下班來源',
+      '刪除時間',
+      '建立時間',
+      '更新時間',
+    ],
+  },
+  corrections: {
+    name: '補卡',
+    header: [
+      '編號',
+      '員工編號',
+      '名字',
+      '類型',
+      '時間',
+      '結束時間',
+      '狀態',
+      '原因',
+      '申請者',
+      '群組',
+      '班號',
+      '申請時間',
+      '處理者',
+      '處理時間',
+    ],
+  },
+  payroll: {
+    name: '結算',
+    header: [
+      '結算編號',
+      '月份',
+      '執行時間',
+      '觸發者',
+      '員工編號',
+      '名字',
+      '班數',
+      '分鐘',
+      '應發金額',
+    ],
+  },
+  audit: {
+    name: '操作紀錄',
+    header: ['編號', '操作者', '動作', '對象', '修改前', '修改後', '時間'],
+  },
+  info: {
+    name: '備份資訊',
+    header: ['備份時間', '觸發者', '資料庫版本'],
+  },
+} as const;
+
+/** Cell labels for stored codes (one label per code, so the sheet stays faithful to the DB). */
+export const STAFF_BACKUP_LABELS = {
+  employeeStatus: { pending: '申請中', active: '啟用', disabled: '停用' } as Record<string, string>,
+  correctionStatus: {
+    pending: '待審',
+    approved: '已核准',
+    rejected: '已駁回',
+    failed: '核准失敗',
+    cancelled: '已取消',
+  } as Record<string, string>,
+  correctionKind: { in: '上班', out: '下班', shift: '整班' } as Record<string, string>,
+  correctionReason: {
+    noOpenShift: '找不到可配對的上班紀錄',
+    overlap: '重疊',
+    exceedsMaxHours: '超過時數上限',
+  } as Record<string, string>,
+  shiftSource: { punch: '打卡', correction: '補卡', admin: '管理員' } as Record<string, string>,
+  /** `triggered_by` of scheduled payroll runs and backups. */
+  schedule: '排程',
+};
+
+/** Why a backup failed (§16.5); `table` is the tab name for `shrink`. */
+export type StaffBackupFailure =
+  | { code: 'network' | 'timeout' | 'badResponse' | 'unauthorized' | 'busy' }
+  | { code: 'http'; status: number }
+  | { code: 'shrink'; table: string }
+  | { code: 'script'; detail: string };
+
+export function staffBackupReason(f: StaffBackupFailure): string {
+  switch (f.code) {
+    case 'network':
+      return '網路錯誤';
+    case 'timeout':
+      return '連線逾時';
+    case 'badResponse':
+      return '試算表回應異常';
+    case 'http':
+      return `試算表回應異常（HTTP ${f.status}）`;
+    case 'unauthorized':
+      return '驗證碼不符';
+    case 'busy':
+      return '試算表忙碌中';
+    case 'shrink':
+      return `筆數減少（${f.table}）`;
+    case 'script':
+      return `試算表錯誤：${f.detail}`;
+  }
+}
+
+/** Manual `備份` succeeded: `備份完成：員工 3、時薪 3、打卡 120…`. */
+export function staffBackupDone(counts: { name: string; count: number }[]): string {
+  return `備份完成：${counts.map((c) => `${c.name} ${c.count}`).join('、')}`;
+}
+
+/** Manual `備份` failed; a row-count drop also says how to overwrite anyway. */
+export function staffBackupFailed(f: StaffBackupFailure): string {
+  const hint = f.code === 'shrink' ? '。確定要覆寫請輸入：備份 強制' : '';
+  return `備份失敗：${staffBackupReason(f)}${hint}`;
+}
+
+/** First failure of a streak of scheduled daily backups, DMed to every admin once. */
+export function staffBackupScheduledFailed(date: LocalDate, f: StaffBackupFailure): string {
+  return `${staffDay(date)} 每日備份失敗：${staffBackupReason(f)}。處理後可輸入：備份`;
 }

@@ -27,6 +27,7 @@ const expectedTables = [
   'audit_log',
   'pending_images',
   'staff_reminders',
+  'staff_backups',
   'schema_migrations',
 ];
 
@@ -52,6 +53,7 @@ describe('runMigrations', () => {
       { version: 8, name: '008_staff' },
       { version: 9, name: '009_pending_images' },
       { version: 10, name: '010_staff_corrections' },
+      { version: 11, name: '011_staff_backups' },
     ]);
   });
 
@@ -81,6 +83,7 @@ describe('runMigrations', () => {
         'idx_correction_requests_employee',
         'idx_payroll_runs_month',
         'idx_audit_log_created',
+        'idx_staff_backups_date',
       ]),
     );
   });
@@ -123,7 +126,7 @@ describe('migration 010 (correction_requests rebuild)', () => {
       unknown
     >[];
 
-    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2); // 010 and 011
 
     const after = db.prepare('SELECT * FROM correction_requests ORDER BY id').all();
     expect(after).toEqual(before.map((r) => ({ ...r, end_at: null })));
@@ -176,7 +179,7 @@ describe('migration 010 (correction_requests rebuild)', () => {
 
   it('migrates an empty table and creates staff_reminders keyed by date', () => {
     const db = dbAt(9);
-    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2); // 010 and 011
     db.prepare(
       "INSERT INTO employees (id, user_id, name, status) VALUES (1, 'Ua', '王小明', 'active')",
     ).run();
@@ -194,5 +197,39 @@ describe('migration 010 (correction_requests rebuild)', () => {
     expect(() =>
       db.prepare("INSERT INTO staff_reminders (date) VALUES ('2026-11-12')").run(),
     ).toThrow(/UNIQUE/);
+  });
+});
+
+describe('migration 011 (staff_backups)', () => {
+  it('adds staff_backups to a database at version 10', () => {
+    const db = new BetterSqlite3(':memory:');
+    db.exec(
+      'CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)',
+    );
+    const record = db.prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
+    );
+    for (const m of migrations.filter((x) => x.version <= 10)) {
+      db.exec(m.sql);
+      record.run(m.version, m.name, '2026-11-01T00:00:00.000Z');
+    }
+    expect(runMigrations(db)).toBe(1);
+    const cols = (db.prepare('PRAGMA table_info(staff_backups)').all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    expect(cols).toEqual([
+      'id',
+      'date',
+      'triggered_by',
+      'started_at',
+      'finished_at',
+      'ok',
+      'error',
+      'counts_json',
+    ]);
+    const r = db
+      .prepare('INSERT INTO staff_backups (date, triggered_by, started_at) VALUES (?, ?, ?)')
+      .run(null, 'Uadmin', '2026-12-01T01:00:00.000Z');
+    expect(Number(r.lastInsertRowid)).toBe(1);
   });
 });

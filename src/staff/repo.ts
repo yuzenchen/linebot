@@ -1,6 +1,6 @@
 /**
  * SQLite access for the staff tables (migration 008; `correction_requests` rebuilt and
- * `staff_reminders` added in 010). Every write takes an explicit `now`; the service layer wraps
+ * `staff_reminders` added in 010, `staff_backups` in 011). Every write takes an explicit `now`; the service layer wraps
  * multi-row changes in `db.transaction`.
  */
 import type { Database } from 'better-sqlite3';
@@ -87,6 +87,21 @@ export interface PayrollRunRow {
   /** `schedule` or the admin userId. */
   triggered_by: string;
   result_json: string;
+}
+
+/** §16.6 one backup attempt. */
+export interface StaffBackupRow {
+  id: number;
+  /** Taipei date of a scheduled (daily) backup; null for a manual `備份`. */
+  date: LocalDate | null;
+  /** `schedule` or the admin userId. */
+  triggered_by: string;
+  started_at: string;
+  finished_at: string | null;
+  /** 1 / 0 once finished; null while in flight (or after a crash mid-attempt). */
+  ok: number | null;
+  error: string | null;
+  counts_json: string | null;
 }
 
 export interface AuditRow {
@@ -182,6 +197,7 @@ export function createStaffRepo(db: Database) {
     ),
     markOverdue: db.prepare('UPDATE shifts SET overdue = 1, updated_at = ? WHERE id = ?'),
     softDelete: db.prepare('UPDATE shifts SET deleted_at = ?, updated_at = ? WHERE id = ?'),
+    allWithDeleted: db.prepare('SELECT * FROM shifts ORDER BY id'),
   };
   const corr = {
     insert: db.prepare(
@@ -189,6 +205,7 @@ export function createStaffRepo(db: Database) {
     ),
     get: db.prepare('SELECT * FROM correction_requests WHERE id = ?'),
     pending: db.prepare("SELECT * FROM correction_requests WHERE status = 'pending' ORDER BY id"),
+    all: db.prepare('SELECT * FROM correction_requests ORDER BY id'),
     pendingDuplicate: db.prepare(
       "SELECT * FROM correction_requests WHERE employee_id = ? AND kind = ? AND at = ? AND end_at IS ? AND status = 'pending' ORDER BY id LIMIT 1",
     ),
@@ -206,6 +223,22 @@ export function createStaffRepo(db: Database) {
     get: db.prepare('SELECT * FROM payroll_runs WHERE id = ?'),
     forMonth: db.prepare('SELECT * FROM payroll_runs WHERE month = ? ORDER BY id'),
     anyForMonth: db.prepare('SELECT 1 FROM payroll_runs WHERE month = ? LIMIT 1'),
+    all: db.prepare('SELECT * FROM payroll_runs ORDER BY id'),
+  };
+  const backup = {
+    start: db.prepare(
+      'INSERT INTO staff_backups (date, triggered_by, started_at) VALUES (?, ?, ?)',
+    ),
+    finish: db.prepare(
+      'UPDATE staff_backups SET finished_at = ?, ok = ?, error = ?, counts_json = ? WHERE id = ?',
+    ),
+    get: db.prepare('SELECT * FROM staff_backups WHERE id = ?'),
+    forDate: db.prepare('SELECT * FROM staff_backups WHERE date = ? ORDER BY id'),
+    latestOk: db.prepare('SELECT * FROM staff_backups WHERE ok = 1 ORDER BY id DESC LIMIT 1'),
+    latestScheduledFailure: db.prepare(
+      'SELECT * FROM staff_backups WHERE ok = 0 AND date IS NOT NULL ORDER BY id DESC LIMIT 1',
+    ),
+    all: db.prepare('SELECT * FROM staff_backups ORDER BY id'),
   };
   const reminder = {
     insert: db.prepare(
@@ -218,6 +251,7 @@ export function createStaffRepo(db: Database) {
       'INSERT INTO audit_log (actor, action, target, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     recent: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?'),
+    all: db.prepare('SELECT * FROM audit_log ORDER BY id'),
   };
 
   return {
@@ -313,6 +347,8 @@ export function createStaffRepo(db: Database) {
       softDelete(id: number, now: Date): void {
         shift.softDelete.run(iso(now), iso(now), id);
       },
+      /** Every shift by id, soft-deleted ones included (§16 backup). */
+      listAllWithDeleted: () => shift.allWithDeleted.all() as ShiftRow[],
     },
     corrections: {
       insert(c: InsertCorrectionInput, now: Date): number {
@@ -329,6 +365,7 @@ export function createStaffRepo(db: Database) {
       },
       get: (id: number) => corr.get.get(id) as CorrectionRow | undefined,
       listPending: () => corr.pending.all() as CorrectionRow[],
+      listAll: () => corr.all.all() as CorrectionRow[],
       /** Pending request of the same kind and time(s); `endAt` only for `shift`. */
       findPendingDuplicate: (
         employeeId: number,
@@ -364,6 +401,29 @@ export function createStaffRepo(db: Database) {
       listForMonth: (month: Month) => payroll.forMonth.all(month) as PayrollRunRow[],
       /** §15.2: a month counts as settled once any run (schedule or manual) exists for it. */
       existsForMonth: (month: Month) => payroll.anyForMonth.get(month) !== undefined,
+      listAll: () => payroll.all.all() as PayrollRunRow[],
+    },
+    backups: {
+      /** Records an attempt before anything is sent (`ok` null until `finish`). */
+      start(date: LocalDate | null, triggeredBy: string, now: Date): number {
+        return Number(backup.start.run(date, triggeredBy, iso(now)).lastInsertRowid);
+      },
+      finish(
+        id: number,
+        r: { ok: boolean; error: string | null; counts: unknown },
+        now: Date,
+      ): void {
+        backup.finish.run(iso(now), r.ok ? 1 : 0, r.error, json(r.counts ?? undefined), id);
+      },
+      get: (id: number) => backup.get.get(id) as StaffBackupRow | undefined,
+      /** Scheduled attempts for a Taipei date, oldest first. */
+      listForDate: (date: LocalDate) => backup.forDate.all(date) as StaffBackupRow[],
+      /** Newest successful backup (scheduled or manual). */
+      latestOk: () => backup.latestOk.get() as StaffBackupRow | undefined,
+      /** Newest failed scheduled backup. */
+      latestScheduledFailure: () =>
+        backup.latestScheduledFailure.get() as StaffBackupRow | undefined,
+      listAll: () => backup.all.all() as StaffBackupRow[],
     },
     reminders: {
       /**
@@ -388,6 +448,7 @@ export function createStaffRepo(db: Database) {
         return Number(r.lastInsertRowid);
       },
       recent: (limit = 50) => audit.recent.all(limit) as AuditRow[],
+      listAll: () => audit.all.all() as AuditRow[],
     },
   };
 }

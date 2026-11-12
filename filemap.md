@@ -11,6 +11,7 @@
 - `docs/KNOWLEDGE-REVIEW.md` — 知識庫審閱檔（給 pet eshop 專案校對用，由 scratch 腳本產生）
 - `docs/LINE-SETUP.md` — 使用者操作：建 Messaging API channel、關自動回應、開 webhook、tunnel
 - `docs/VERIFY.md` — T9 驗證結果（T9 建立）
+- `docs/STAFF-BACKUP.md` — 使用者操作（T24，SPEC-STAFF §16）：建立備份試算表、貼 Apps Script、設 `TOKEN` 指令碼屬性、部署網頁應用程式、填 `.env.staff` 與測試 `備份`；含 Apps Script 原始碼（token 比對、LockService、先檢查全部分頁筆數減少再寫、文字設純文字格式）
 - `README.md` — 使用者操作手冊：本機啟動、webhook、環境變數、指令、Pi 部署、常見問題
 - `knowledge/` — 客服知識庫 Markdown，啟動時全讀進 prompt；改 FAQ 內容來這裡（T4 建立）
 - `package.json`、`package-lock.json` — 相依套件與 npm scripts
@@ -23,8 +24,8 @@
 - `src/server.ts` — Hono app、/health（含 `profile`）、webhook 路由、依 `BOT_PROFILE` 建 profile 並接上 dispatcher / extraRoutes / start / stop、graceful shutdown；staff 時固定用 `NullGrokGateway`、不掛 `/grok/callback`（`grokCallbackFallback: false` → 404）
 - `src/profiles/` — T10：同一份程式碼三種 bot（enduser / admin / staff），由 `BOT_PROFILE` 選擇
 - `src/profiles/types.ts` — `BotProfile`（`handleText` / 選用 `handleGroupText` / 選用 `handleImage`、`handleGroupImage`（只有 admin）/ `welcomeText` / `extraRoutes` / `start` / `stop`）與共用依賴 `Shared`（含 `db` 連線、選用 `lineBlob` 供測試注入）
-- `src/profiles/staff.ts` — `createStaffProfile()`（T21）：staff service、messenger、payroll reporter、`createStaffHandlers`；`start` 啟動月結排程與每日待審補卡提醒（T23）、`stop` 停止；沒有 extraRoutes、job handlers、eshop / Anthropic / Grok
-- `src/handlers/staff.ts` — `createStaffHandlers()`（T21，SPEC-STAFF §3–9）：群組（只認 `STAFF_GROUP_IDS`，其他群組 / room 記 groupId 後不回應）註冊 / 上班 / 下班 / 補卡（含整班）/ 取消、其他群組訊息不回應（格式錯的 `取消` 也不回）；私訊員工指令與管理員指令（非管理員用管理指令視為看不懂）、`說明` 依身分列指令、兩段式刪除打卡、`修改 S0123`（T23）；申請通知全部管理員、核准 / 駁回 / 核准失敗結果私訊申請人（失敗改群組）、註冊核准在群組公告；修改 / 代補 / 刪除碰到已結算月份時加重新結算提示；失敗保底回覆
+- `src/profiles/staff.ts` — `createStaffProfile()`（T21）：staff service、messenger、payroll reporter、`createStaffHandlers`；`start` 啟動月結排程與每日待審補卡提醒（T23）、`stop` 停止；沒有 extraRoutes、job handlers、eshop / Anthropic / Grok；T24：`STAFF_BACKUP_SHEET_URL` 與 `STAFF_BACKUP_TOKEN` 都有時建 `createStaffBackup` 並啟動每日備份排程（`STAFF_BACKUP_HOUR`；只填一個時 log 提醒）；`opts.fetch` 供測試替換
+- `src/handlers/staff.ts` — `createStaffHandlers()`（T21，SPEC-STAFF §3–9）：群組（只認 `STAFF_GROUP_IDS`，其他群組 / room 記 groupId 後不回應）註冊 / 上班 / 下班 / 補卡（含整班）/ 取消、其他群組訊息不回應（格式錯的 `取消` 也不回）；私訊員工指令與管理員指令（非管理員用管理指令視為看不懂）、`說明` 依身分列指令、兩段式刪除打卡、`修改 S0123`（T23）；申請通知全部管理員、核准 / 駁回 / 核准失敗結果私訊申請人（失敗改群組）、註冊核准在群組公告；修改 / 代補 / 刪除碰到已結算月份時加重新結算提示；失敗保底回覆；T24 管理員 `備份` / `備份 強制`（未設定回「尚未設定備份試算表」、成功回各分頁筆數、失敗回原因；排程連續失敗中成功時回覆並通知其他管理員「備份已恢復」）
 - `src/profiles/index.ts` — `createProfile(name, shared)` 依名稱挑實作
 - `src/profiles/enduser.ts` — `createEnduserProfile()`：客戶端 bot 的原有組裝（分類器、訊息處理、handoff、job handlers、工單服務、`/internal/reply`、sweeper 固定啟動）與 `mountGrokCallback()`（兩個 profile 共用的 `/grok/callback`）
 - `src/profiles/admin.ts` — `createAdminProfile()`：管理端 bot 組裝（T12b）：EshopClient（token provider）、`new Anthropic()`、`createAdminTextHandler`、`createDirectAdminNotifier` 注入 job handlers / `/grok/callback` / sweeper、`/internal/notify`、`start` / `stop`；`handleGroupText` = `createGroupHandler`（SPEC-ADMIN §13–§14）；§16 圖片：`createImageAttacher`（LINE blob client）注入私訊與群組 handler、`handleImage` / `handleGroupImage` = `createAdminImageHandlers`、`start` 時清過期待用圖片
@@ -89,10 +90,11 @@
 - `src/tickets/` — T15 客戶端工單
 - `src/db/bugReports.ts` — `createBugReportsRepo(db)`：SPEC-ADMIN §13 群組回報的網站 bug（`insert` / `get` / `findRecentDuplicate` / `setStatus` / `setGrokTask`），migration 006
 - `src/bugs/ids.ts` — `displayBugId(1)` → `B001`
-- `src/staff/` — T20 員工打卡與薪資的資料層與計算（SPEC-STAFF）；T21 加上 LINE 傳送與月結排程；T23 補卡改進（整班、取消、修改、核准失敗通知、待審提醒）；表在 migration 008（employees、wage_rates、shifts、correction_requests、payroll_runs、audit_log），010 重建 correction_requests（kind `shift`、`end_at`、status `cancelled`）並加 staff_reminders
+- `src/staff/` — T20 員工打卡與薪資的資料層與計算（SPEC-STAFF）；T21 加上 LINE 傳送與月結排程；T23 補卡改進（整班、取消、修改、核准失敗通知、待審提醒）；表在 migration 008（employees、wage_rates、shifts、correction_requests、payroll_runs、audit_log），010 重建 correction_requests（kind `shift`、`end_at`、status `cancelled`）並加 staff_reminders；T24 每日備份到 Google 試算表，migration 011 加 staff_backups
+- `src/staff/backup.ts` — T24（§16）：`buildBackupTables()` 從資料庫組七個分頁（台北時間 `YYYY-MM-DD HH:mm`、E001 / S0001 / R001、含軟刪除的打卡、`payroll_runs` 快照每次每人一列、備份資訊含資料庫版本與筆數）；`postBackup()` 以 `fetch` POST `{ token, force, generatedAt, tables }`（跟隨 Apps Script 302 轉址、逾時、不記網址與 token）；`parseBackupResponse()`；`createStaffBackup()` 每次先寫 `staff_backups` 再送出、多次執行排隊
 - `src/staff/messenger.ts` — `createStaffMessenger()`（T21）：經 `Replier` 傳送；`packLines()` 依換行切成 ≤5000 字、每次最多 5 則分批（不截斷，第一批 reply、其餘 push）；`notifyAdmins` / `dm` / `dmOrGroup`（私訊失敗改群組），個別失敗只記 log 不中斷
 - `src/staff/payrollReport.ts` — `createPayrollReporter()`（T21，§8）：`runPayroll` 後選擇性私訊員工、管理員總表（要求者 reply、其他管理員 push）、標註「未加好友，未通知」；排程遇到無員工且無待處理時只記錄不發送
-- `src/staff/scheduler.ts` — `startPayrollScheduler()`（T21，§8）：啟動時與每 5 分鐘檢查，台北時間已過當月 1 日 `STAFF_PAYROLL_CRON_HOUR` 且上個月沒有 `schedule` 的 `payroll_runs` 才結算（重啟補跑、不重複）；`dueScheduleMonth()`、`checkOnce()`。`startReminderScheduler()`（T23，§15.5）：每天 `STAFF_PAYROLL_CRON_HOUR` 起第一次檢查先寫 `staff_reminders`（台北日期，無符合項目時 `sent_at` 為空）再合併一則私訊全部管理員（待審超過 3 天、發薪日前一天的上月待審）；當天不重發、不補前一天；`dueReminderDate()`、`planReminder()`
+- `src/staff/scheduler.ts` — `startPayrollScheduler()`（T21，§8）：啟動時與每 5 分鐘檢查，台北時間已過當月 1 日 `STAFF_PAYROLL_CRON_HOUR` 且上個月沒有 `schedule` 的 `payroll_runs` 才結算（重啟補跑、不重複）；`dueScheduleMonth()`、`checkOnce()`。`startReminderScheduler()`（T23，§15.5）：每天 `STAFF_PAYROLL_CRON_HOUR` 起第一次檢查先寫 `staff_reminders`（台北日期，無符合項目時 `sent_at` 為空）再合併一則私訊全部管理員（待審超過 3 天、發薪日前一天的上月待審）；當天不重發、不補前一天；`dueReminderDate()`、`planReminder()`。`startBackupScheduler()`（T24，§16）：每天 `STAFF_BACKUP_HOUR` 起備份一次（`staff_backups` 依台北日期，當天排程成功過就不再跑、重啟不重跑、不補前幾天），失敗每小時重試到當天成功；連續失敗（含跨日）只在第一次私訊全部管理員，結束連續失敗的成功（排程或手動）私訊「備份已恢復」；`backupFailureOutstanding()`
 - `src/staff/time.ts` — 台北時區（固定 +08:00，與主機 TZ 無關）日期工具：`taipeiDate` / `taipeiMonth` / `taipeiTime` / `taipeiInstant`、`addDays`、`weekStart`（週一）、`monthBounds`、`previousMonth`、`splitMinutes`
 - `src/staff/ids.ts` — `displayEmployeeId(1)` → `E001`、`displayCorrectionId` → `R001`、`displayShiftId` → `S0001` 與對應 `parse*Id`
 - `src/staff/commands.ts` — `parseStaffCommand(text, now)`：§4–6、§9 全部指令 → `StaffCommand` 判別聯集（非指令回 null、已知關鍵字但參數錯回 `malformed`）；上班 / 下班需 trim 後完全相同；日期 `11/12`、`2026/11/12`（補卡 / 刪除打卡取最近不在未來的年份，`自` 日期取最接近今天的年份可在未來）、月份 `2026-11`；全形數字與冒號可用；T23：整班 `補卡 11/12 09:00-18:00`（`-` / `~`，結束不晚於開始算隔天）、`取消 R001`、`修改 S0123 上班|下班 [M/D] HH:MM`
@@ -115,7 +117,7 @@
 - `src/cli/bootstrap.ts` — CLI 共用：讀 `.env`、開 `DATA_DIR` 的 DB、補 LINE 佔位值（logger 需要）
 - `test/` — vitest 測試
 - `test/db/` — migrations 與 repository 測試（in-memory SQLite；`migrate.test.ts` 含 migration 010 既有資料、id 與 AUTOINCREMENT 保留）；`grokTasks.test.ts` 測 grok_tasks repo；`adminQueries.test.ts` 測 admin_queries repo；`bugReports.test.ts` 測 bug_reports repo 與 `displayBugId`
-- `test/staff/` — T20：`helpers.ts`（臨時 SQLite + service、`tp()` 台北時間、`hire()`、`addShift()`）、`time.test.ts`（時區與編號）、`commands.test.ts`（指令與年份推斷）、`punch.test.ts`（§5）、`corrections.test.ts`（§6 純函式與核准流程；T23 整班補卡與取消）、`admin.test.ts`（§4 註冊、時薪、管理操作與 audit）、`payroll.test.ts`（§7–8 月結）、`edit.test.ts`（T23 修改打卡、已結算月份）、`reminder.test.ts`（T23 待審補卡提醒的選擇、文案與每日一次）；以 `TZ=UTC` 執行也須通過
+- `test/staff/` — T20：`helpers.ts`（臨時 SQLite + service、`tp()` 台北時間、`hire()`、`addShift()`）、`time.test.ts`（時區與編號）、`commands.test.ts`（指令與年份推斷）、`punch.test.ts`（§5）、`corrections.test.ts`（§6 純函式與核准流程；T23 整班補卡與取消）、`admin.test.ts`（§4 註冊、時薪、管理操作與 audit）、`payroll.test.ts`（§7–8 月結）、`edit.test.ts`（T23 修改打卡、已結算月份）、`reminder.test.ts`（T23 待審補卡提醒的選擇、文案與每日一次）；以 `TZ=UTC` 執行也須通過；`backup.test.ts`（T24 七個分頁內容、回應解析、mock fetch、本機 302 轉址實測、`staff_backups` 紀錄與排隊、每日排程只跑一次、不補前幾天、每小時重試、連續失敗只通知一次與恢復通知、手動成功結束連續失敗）
 - `test/jobs/` — JobQueue 測試（假時鐘、`tick()` 驅動）
 - `test/jobs/handlers.test.ts` — 三種 job handler 在 Null / 假 gateway 下的行為與 job 狀態轉移
 - `test/grok/` — `gateway.test.ts`（fake fetch、Bearer、payload）、`callback.test.ts`（token、狀態流轉、push）、`deferral.test.ts`（轉人工文字偵測）、`sweeper.test.ts`（逾時處理）
@@ -125,7 +127,7 @@
 - `test/eshop/` — `auth.test.ts`（登入快取 / 重登 / 鎖定退避 / 併發）、`client.test.ts`（URL 組裝、401 重試、404 / 429 / 格式錯誤、僅五個方法）、`mask.test.ts`（遮罩與台北時間格式）；`helpers.ts` 假 fetch 與樣本訂單
 - `test/health/` — health checker 測試（fake fetch）
 - `test/profiles/admin.test.ts` — 管理端 profile 白名單拒絕、push fallback、`start` / `stop`、`/grok/callback` 與 `/internal/notify` 掛載
-- `test/profiles/staff.test.ts` — T21：經 dispatcher 的群組註冊 / 打卡 / 補卡、未設定群組不回應並記 log、私訊員工與管理員指令（含兩段式刪除）、通知與私訊失敗改群組、月結排程（時間未到、只跑一次、重啟補跑）、總表格式與分段、`通知員工`、群組不收薪資、無 eshop / Anthropic / Grok 設定可啟動且無 `/grok/callback`；T23 整班補卡、核准失敗通知申請人、取消、修改與已結算提示、每日提醒
+- `test/profiles/staff.test.ts` — T21：經 dispatcher 的群組註冊 / 打卡 / 補卡、未設定群組不回應並記 log、私訊員工與管理員指令（含兩段式刪除）、通知與私訊失敗改群組、月結排程（時間未到、只跑一次、重啟補跑）、總表格式與分段、`通知員工`、群組不收薪資、無 eshop / Anthropic / Grok 設定可啟動且無 `/grok/callback`；T23 整班補卡、核准失敗通知申請人、取消、修改與已結算提示、每日提醒；T24 備份未設定、`備份` / `備份 強制`、每日自動備份與 `STAFF_BACKUP_HOUR`、排程失敗通知與手動恢復、log 不含網址與 token
 - `test/staff/delivery.test.ts` — T21：顯示格式（金額、時數、發薪日）、`packLines`、`dueScheduleMonth`、排程並行與手動結算不影響
 - `test/tickets/` — T15 工單：`helpers.ts`（直接 push 管理員的 ticket service、工單列）、`repo.test.ts`、`ids.test.ts`（id / 訂單編號）、`service.test.ts`（通知文字）、`message.test.ts`（open 工單時的 `ticketPending`）、`internalReplyRoute.test.ts`、`internalTicketsRoute.test.ts`（T16 讀 / 關單路由、token、去識別化）、`followup.test.ts`（callback 事後補充）
 - `Dockerfile`、`docker-compose.yml`、`docker-compose.pi.yml` — 容器定義（本機 / Pi）；第二個服務 `linebot-admin`（host 8091、`.env.admin`、`data-admin/`，本機 compose 需 `--profile admin`）；Pi 第三個服務 `linebot-staff`（host 8092、`.env.staff`、`data-staff/`，`--profile staff`）

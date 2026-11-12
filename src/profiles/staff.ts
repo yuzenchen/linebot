@@ -1,9 +1,12 @@
 import { createStaffHandlers } from '../handlers/staff.js';
+import { createStaffBackup, type StaffBackup } from '../staff/backup.js';
 import { createStaffMessenger } from '../staff/messenger.js';
 import { createPayrollReporter } from '../staff/payrollReport.js';
 import {
+  type BackupScheduler,
   type PayrollScheduler,
   type ReminderScheduler,
+  startBackupScheduler,
   startPayrollScheduler,
   startReminderScheduler,
 } from '../staff/scheduler.js';
@@ -13,10 +16,15 @@ import type { BotProfile, Shared } from './types.js';
 
 /**
  * Employee punch-clock / payroll bot (SPEC-STAFF). Uses only LINE + SQLite: no eshop, Anthropic,
- * Grok, job handlers or extra routes. `start` begins the monthly payroll check (§8) and the daily
- * pending-correction reminder (§15.5).
+ * Grok, job handlers or extra routes. `start` begins the monthly payroll check (§8), the daily
+ * pending-correction reminder (§15.5) and, when STAFF_BACKUP_SHEET_URL and STAFF_BACKUP_TOKEN are
+ * both set, the daily Google Sheets backup at STAFF_BACKUP_HOUR (§16). `opts.fetch` replaces the backup's HTTP client
+ * in tests.
  */
-export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = {}): BotProfile {
+export function createStaffProfile(
+  shared: Shared,
+  opts: { now?: () => Date; fetch?: typeof fetch } = {},
+): BotProfile {
   const { config, db, repos, replier, logger } = shared;
   const service = createStaffService(db, {
     minHourlyWage: config.STAFF_MIN_HOURLY_WAGE,
@@ -34,9 +42,24 @@ export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = 
     payday: config.STAFF_PAYDAY,
     log: logger,
   });
+  const backupUrl = config.STAFF_BACKUP_SHEET_URL;
+  const backupToken = config.STAFF_BACKUP_TOKEN;
+  const backup: StaffBackup | undefined =
+    backupUrl && backupToken
+      ? createStaffBackup({
+          db,
+          repo: service.repo,
+          url: backupUrl,
+          token: backupToken,
+          fetch: opts.fetch,
+          now: opts.now,
+          log: logger,
+        })
+      : undefined;
   const { handleText, handleGroupText } = createStaffHandlers({
     service,
     reporter,
+    backup,
     replier,
     repos,
     config,
@@ -45,6 +68,7 @@ export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = 
   });
   let scheduler: PayrollScheduler | undefined;
   let reminders: ReminderScheduler | undefined;
+  let backups: BackupScheduler | undefined;
 
   return {
     name: 'staff',
@@ -70,15 +94,32 @@ export function createStaffProfile(shared: Shared, opts: { now?: () => Date } = 
         now: opts.now,
         log: logger,
       });
+      if (backup) {
+        backups = startBackupScheduler({
+          service,
+          backup,
+          messenger,
+          hour: config.STAFF_BACKUP_HOUR,
+          now: opts.now,
+          log: logger,
+        });
+      } else if (backupUrl || backupToken) {
+        logger.warn(
+          'staff backup is off: STAFF_BACKUP_SHEET_URL and STAFF_BACKUP_TOKEN must both be set',
+        );
+      }
       logger.info(
-        { hour: config.STAFF_PAYROLL_CRON_HOUR },
-        'staff payroll and reminder schedulers started',
+        { hour: config.STAFF_PAYROLL_CRON_HOUR, backup: backup !== undefined },
+        'staff payroll, reminder and backup schedulers started',
       );
-      return Promise.all([scheduler.initial, reminders.initial]).then(() => undefined);
+      return Promise.all([scheduler.initial, reminders.initial, backups?.initial]).then(
+        () => undefined,
+      );
     },
     stop: async () => {
       scheduler?.stop();
       reminders?.stop();
+      backups?.stop();
     },
   };
 }

@@ -192,3 +192,9 @@ SPEC-ADMIN §16：私訊（`ADMIN_USER_IDS`）與群組（`GROUP_COMMAND_USER_ID
 - [x] 狀態（2026-11-12 部署 Pi `linebot-staff`，新指令尚未實測，見 VERIFY.md）
 
 SPEC-STAFF §15：migration 010 重建 `correction_requests`（`kind` 加 `shift`、新增 `end_at`、`status` 加 `cancelled`，保留 id 與資料）並建 `staff_reminders`；指令解析加 `補卡 11/12 09:00-18:00`（含管理員代補）、`取消 R001`、`修改 S0123 上班|下班 [M/D] HH:MM`；`corrections.ts` 加整班套用（重疊即失敗）；service 加取消、修改（31 天、不超時、不重疊、不晚於現在，`audit_log` 前後值）；核准失敗通知申請人（管道同核准通知，「下班」等待配對另用文案）；已結算月份的修改、代補、刪除回覆加重新結算提示；`scheduler.ts` 每天 `STAFF_PAYROLL_CRON_HOUR` 檢查超過 3 天待審與發薪日前一天的上月待審，合併一則私訊管理員，`staff_reminders` 先寫後發；`texts.ts`、`說明`、§9 表格同步。測試用 mock LINE client 與臨時 SQLite，含 migration 010 既有資料保留。
+
+## T24 每日備份到 Google 試算表（Medium）— 依賴：T23、SPEC-STAFF §16
+
+- [ ] 狀態
+
+SPEC-STAFF §16：`config.ts` 加 `STAFF_BACKUP_SHEET_URL`、`STAFF_BACKUP_TOKEN`（選填，兩者都有才啟用）、`STAFF_BACKUP_HOUR`（預設 1）；migration 011 建 `staff_backups`；`src/staff/backup.ts` 把七個分頁組成 JSON（台北時間、`payroll_runs` 快照展開）POST 到 Apps Script，帶 token 與 `force`；排程每天 `STAFF_BACKUP_HOUR` 跑一次、重啟不重跑、失敗每小時重試，連續失敗只通知一次、恢復時通知；管理員指令 `備份`、`備份 強制`；`docs/STAFF-BACKUP.md` 含 Apps Script（token 比對、筆數減少拒絕、覆寫分頁）與設定步驟；`.env.example`、README、filemap、`說明`、§9、§12 同步。測試用 mock fetch 與臨時 SQLite。

@@ -340,6 +340,26 @@ CREATE TABLE IF NOT EXISTS staff_reminders (
 );
 `;
 
+/**
+ * SPEC-STAFF §16.6: one row per backup attempt to the Google Sheet. `date` is the Taipei date of a
+ * scheduled (daily) backup; manual `備份` rows leave it null.
+ * `ok` stays null while the attempt is in flight (a crash leaves it null). `error` is the readable
+ * reason; `counts_json` the rows written per tab.
+ */
+const staffBackups = `
+CREATE TABLE IF NOT EXISTS staff_backups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT,
+  triggered_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  ok INTEGER,
+  error TEXT,
+  counts_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_staff_backups_date ON staff_backups (date, id);
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
@@ -351,4 +371,5 @@ export const migrations: Migration[] = [
   { version: 8, name: '008_staff', sql: staff },
   { version: 9, name: '009_pending_images', sql: pendingImages },
   { version: 10, name: '010_staff_corrections', sql: staffCorrectionsV2 },
+  { version: 11, name: '011_staff_backups', sql: staffBackups },
 ];
