@@ -123,3 +123,12 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - 私訊實測：「上個月營收多少」→ `revenue` 10-01 ~ 10-31，NT$123,673、71 筆（LINE Pay 58 筆 NT$101,133、轉帳 13 筆 NT$22,540），7.1 秒。10-29 時 `stats` 本月為 NT$122,363，與月底加總趨勢相符。
 - 「本月營收多少」走 `stats`，但模型多附了 revenue 的口徑句；prompt 已改為只有 `revenue` 才附。
 - 店家老闆 userId 已加入 Pi `.env.admin` 的 `GROUP_COMMAND_USER_IDS`（只開群組，未加 `ADMIN_USER_IDS`）；備份 `.env.admin.bak-20261104`。
+
+
+## 員工打卡與薪資 bot（2026-11-12）
+
+- `8eba38e`（T20、T21）已部署 Pi 容器 `linebot-staff`（profile `staff`、host 8092、`./data-staff`），對外 `https://linebot-staff.yuzen.tw`；migration 001–008 套用，`/health` 200，未簽章 webhook 401，`/grok/callback` 404。
+- 員工 channel 掛在 Wama 公司的 LINE provider 底下，userId 與客服、管理端 bot 不同；`STAFF_ADMIN_USER_IDS`（使用者、店家老闆）與 `STAFF_GROUP_IDS` 都是從員工 bot 自己的 `events` 取得。`.env.staff` 本機與 Pi 各一份且一致；Pi 備份 `.env.staff.bak-20261112`。
+- 啟動時排程補跑 2026-10（無員工、無資料，未發送任何訊息）；重啟後未重跑，冪等正常。
+- 正式環境實測（使用者與老闆）：2 名員工群組註冊 → 管理員核准並設定時薪 → 群組上班、下班打卡各 1 班 → 管理員手動「結算 2026-11」。`audit_log` 有 `approve_registration` 2 筆、`payroll_run` 2 筆，log 無錯誤。
+- 尚未在正式環境實測：補卡申請與核准、時薪中途調整、刪除打卡、超過 16 小時與重複打卡的回覆、每月 1 日自動結算（第一次在 2026-12-01 09:00）、員工未加好友時的總表標註。
