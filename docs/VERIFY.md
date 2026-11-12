@@ -139,4 +139,4 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - `e847efb`（T22、SPEC-ADMIN §16）已部署 Pi `linebot-admin`，migration 009 套用；容器內 `sharp` 把 3000×1500 縮成 1280×640 正常。
 - 私訊實測：連傳 2 張截圖只回一次「已收到圖片」；接著問「為什麼這位客人網站不能存取」→ 2 張都附上（`failed` 0），模型呼叫 `health` 後依截圖判斷為客人被網站安全防護擋下，17.9 秒。
 - 用量（`admin_queries` id 40）：第 1 輪 cache write 9,132（距上次查詢超過快取時效，system 也重寫）；第 2 輪 cache read 9,132、write 292，**含圖片的前綴命中快取**。全次 output 1,136。依 Opus 5.5 價格約 US$0.07（約 NT$2.3），其中模型輸出約三分之一。
-- 尚未在正式環境實測：群組貼圖後 tag 查詢、10 分鐘過期、非白名單與他人圖片不帶入。
+- 群組貼圖後 tag 查詢、10 分鐘過期、非白名單與他人圖片不帶入：使用者決定暫不實測（單元測試已涵蓋）。T22 標為完成。
