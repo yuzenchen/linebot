@@ -180,3 +180,9 @@ Pi 兩個容器更新、`.env.admin` 加 `ENDUSER_INTERNAL_URL`、CURSOR-AUTOMAT
 - [x] 狀態（2026-11-12 部署 Pi `linebot-staff`，正式環境驗證見 VERIFY.md）
 
 `src/profiles/staff.ts` 與 handler：群組（只在 `STAFF_GROUP_IDS`，未列群組記 groupId）處理註冊、上班、下班、補卡；私訊處理員工與管理員指令（§9）、管理員通知、核准結果通知；文案集中 `texts.ts`；每月 1 日 `STAFF_PAYROLL_CRON_HOUR` 自動月結與 `結算` 指令（§8，寫 `payroll_runs`、管理員總表、員工私訊、未加好友標註）；`audit_log`。`docker-compose.pi.yml` 加 `linebot-staff`（profile `staff`、8092、`./data-staff`、`.env.staff`）、`.env.example`、`docs/LINE-SETUP.md` 員工帳號段落、README、filemap。整合測試用 mock LINE client 與臨時 SQLite。
+
+## T22 管理端傳圖片查詢（Careful）— 依賴：T18、SPEC-ADMIN §16
+
+- [ ] 狀態
+
+SPEC-ADMIN §16：私訊（`ADMIN_USER_IDS`）與群組（`GROUP_COMMAND_USER_IDS`）的圖片記為待用（只存 LINE 訊息 ID，migration 009 `pending_images`，10 分鐘、最多 3 張、同人同對話），私訊回 `texts.adminImageReceived`、群組不回應；下一則送模型的文字（群組需 tag）才下載、用 `sharp` 縮到長邊 1280px JPEG，以 base64 image block 放進 user 訊息；快捷指令與 `/bug` 不消耗。prompt 加圖片規則；`admin_queries` 加 `image_count`、token 加總與 `model`（migration 009）。圖片內容不落地、不進 log / `admin_queries` / `messages` / `group_context`。測試用 mock blob client、mock model、臨時 SQLite。

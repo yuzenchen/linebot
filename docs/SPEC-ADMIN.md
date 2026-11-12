@@ -336,3 +336,70 @@ LINE Developers 管理端 channel 需打開「Allow bot to join group chats」�
 - [ ] 超過 366 天或 2000 筆 → 回請縮小區間，不回部分數字。
 - [ ] 群組內也可查區間營收。
 - [ ] 本月口徑比對結果記入 `docs/VERIFY.md`。
+
+## 16. 傳圖片查詢（私訊與群組，2026-11-12 定案）
+
+### 16.1 問題與範圍
+
+管理端 bot 目前只處理文字：私訊傳圖片回 `texts.nonTextMessage`，群組圖片不處理，圖片本身不下載、不給模型看。改為讓管理員傳截圖（例如訂單截圖）後，用文字問「這筆出貨了嗎」，模型看圖並用現有工具查詢回答。
+
+- **私訊**：只限 `ADMIN_USER_IDS`。非白名單者傳圖仍回 `texts.adminOnly`。
+- **群組**：只限 `GROUP_COMMAND_USER_IDS`，查詢仍需 tag bot（§14），工具仍是群組唯讀子集。非白名單者的圖片一律忽略。
+- `/bug` 指令不附圖片（§13 不呼叫模型，維持不變）。
+- 客服 bot（enduser）與員工 bot（staff）行為不變。
+
+### 16.2 流程
+
+LINE 的圖片與文字是兩則訊息，而且圖片訊息無法 tag bot，所以一律採「**先傳圖、再問**」：
+
+1. 收到白名單者的圖片：只記下 LINE 訊息 ID，放進該使用者在**該對話**（私訊，或某個群組）的「待用圖片」，**此時不下載**。
+   - 私訊：reply `texts.adminImageReceived`：「已收到圖片，請問要查什麼？例如：這筆出貨了嗎」。一次傳多張（LINE 圖片組）時只回一次，不洗版。
+   - 群組：**不回應**（群組常有與查詢無關的圖片，避免洗版）。
+2. 同一人在同一對話 **10 分鐘內**的下一則送模型的文字（私訊：一般訊息；群組：tag bot 的查詢），會連同待用圖片（最多 3 張，超過時保留最新 3 張）一起交給模型；交給模型後即清除。
+   - 只帶「同一人、同一對話」的圖片：A 在群組貼圖、B tag 查詢，不會帶上 A 的圖；私訊與群組的待用圖片互不混用。
+3. 交給模型前才下載：用 LINE content API 下載，長邊大於 1280px 時等比縮到 1280px，轉 JPEG（品質 80）；小於 1280px 不放大。圖片放在該則 user 訊息、文字之前。
+   - `contentProvider.type` 不是 `line`、下載或縮圖失敗 → 略過該張，回覆開頭註明 `texts.adminImageFailed`：「有圖片無法讀取，以下只依文字回答。」並記 log（不含圖片內容）。
+4. 10 分鐘內沒有接著問 → 待用圖片過期清除，不回應。
+5. 私訊的快捷指令（Y 確認、回覆 T042、待回覆、工單、結案）與群組的 `/bug` 不消耗待用圖片，圖片留給下一則送模型的文字（仍受 10 分鐘限制）。
+6. 追問（例如「那另一筆呢」）只帶文字上下文，不再附上之前的圖片；要再看圖就重傳。
+
+### 16.3 模型與快取
+
+- 模型、effort、工具、輪數上限、伺服器端 fallback 都不變（群組仍是唯讀子集與 `GROUP_PROMPT`）。
+- 圖片放在 user 訊息內，在 system 與工具定義之後；迴圈已用自動快取（`cache_control: ephemeral`），第 2 輪起含圖片的前綴從快取讀取。實作後用 usage 確認第 2 輪的 `cache_read_input_tokens` 有涵蓋圖片。
+- system prompt 加一句：使用者附上的圖片可能是訂單、商品或後台截圖；從圖中辨識訂單編號等資訊後，用工具查詢實際狀態再回答，不要只憑圖片內容回答狀態；看不清楚時請使用者補充。
+
+### 16.4 個資與保存
+
+- 截圖可能含客戶姓名、電話、地址。待用圖片只存 LINE 訊息 ID；圖片內容只在交給模型時於記憶體中下載與縮圖，**不落地**，不寫入 log、`admin_queries`、`messages`、`group_context`。
+- 私訊的 `messages` 只記一筆 `type=image`（無內容），同現行。
+- 回覆仍依現有個資規則（預設遮罩、明確要求才顯示）；群組回覆所有成員可見，同 §14.1。
+
+### 16.5 用量紀錄
+
+為了上線一兩週後確認費用，每次查詢（私訊與群組、不論有沒有圖片）在 `admin_queries` 記錄（migration 009 新增欄位）：
+
+- `image_count`：這次實際交給模型的圖片數。
+- `input_tokens`、`cache_read_tokens`、`cache_write_tokens`、`output_tokens`：該次查詢所有輪次的加總。
+- `model`：實際回答的模型（伺服器端 fallback 時與設定不同）。
+
+另外在既有的每輪 usage log 加上 `imageCount`。部署會重建容器、docker log 會清空，所以以 `admin_queries` 為準。
+
+### 16.6 實作備註
+
+- 縮圖用 `sharp`（alpine arm64 有預編譯版本），新增為 dependency；容器記憶體上限 256MB，圖片逐張處理。
+- 下載用 `@line/bot-sdk` 的 `MessagingApiBlobClient.getMessageContent`。
+- 待用圖片存 SQLite（migration 009 新表 `pending_images`：`user_id`、`conversation`（`dm` 或 groupId / roomId）、`line_message_id`、`created_at`），讀取時與啟動時清掉超過 10 分鐘的資料。
+- dispatcher 目前只把群組文字訊息交給 `handleGroupText`；新增群組圖片的處理入口，其他群組事件仍只記 log。
+- 測試用 mock LINE blob client、mock model client 與臨時 SQLite；縮圖測試用程式產生的小圖，不放真實截圖。
+
+### 16.7 完成定義
+
+- [ ] 私訊傳訂單截圖，再問「這筆出貨了嗎」→ 模型從圖中讀出訂單編號，用 `get_order` 查詢後回答。
+- [ ] 群組內管理員貼截圖（bot 不回應），再 tag 問「這筆出貨了嗎」→ 同上，只用唯讀工具。
+- [ ] 群組內非白名單者貼圖、或另一位管理員 tag 查詢 → 不帶上那張圖。
+- [ ] 傳圖後 10 分鐘內沒有問 → 不回應、圖片清除；超過 10 分鐘才問 → 只當一般文字查詢。
+- [ ] 大圖縮到長邊 1280px；`admin_queries` 記錄 `image_count` 與 token 加總。
+- [ ] 第 2 輪起含圖片的前綴命中快取。
+- [ ] 非白名單私訊傳圖 → `texts.adminOnly`；客服 bot、員工 bot 傳圖行為不變。
+- [ ] 圖片內容不出現在 log、`admin_queries`、`messages`、`group_context`。
