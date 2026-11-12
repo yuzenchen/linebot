@@ -140,3 +140,13 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - 私訊實測：連傳 2 張截圖只回一次「已收到圖片」；接著問「為什麼這位客人網站不能存取」→ 2 張都附上（`failed` 0），模型呼叫 `health` 後依截圖判斷為客人被網站安全防護擋下，17.9 秒。
 - 用量（`admin_queries` id 40）：第 1 輪 cache write 9,132（距上次查詢超過快取時效，system 也重寫）；第 2 輪 cache read 9,132、write 292，**含圖片的前綴命中快取**。全次 output 1,136。依 Opus 5.5 價格約 US$0.07（約 NT$2.3），其中模型輸出約三分之一。
 - 群組貼圖後 tag 查詢、10 分鐘過期、非白名單與他人圖片不帶入：使用者決定暫不實測（單元測試已涵蓋）。T22 標為完成。
+
+
+## 員工 bot 補卡改進與正式上線準備（2026-11-12）
+
+- `7a1372d`（T23、SPEC-STAFF §15）已部署 Pi `linebot-staff`；部署前備份 `data-staff/linebot.db.bak-20261112-pre010`。migration 009、010 套用，`correction_requests` 含 `cancelled`、`staff_reminders` 已建；`/health` 200，未簽章 webhook 401。
+- migration 010 部署前先以正式資料庫複本試跑：3 筆補卡、id 與 AUTOINCREMENT 保留，`foreign_key_check` 空、`integrity_check` ok。
+- 提醒排程啟動後寫入 2026-11-12 一筆（無符合項目，未發送）。
+- 清理測試資料（使用者授權，先備份 `data-staff/linebot.db.bak-20261112-cleanup`）：刪除 E001、E002 的員工、時薪、打卡與 2026-11 測試結算（`payroll_runs` id 2）；刪除 E003 的 3 班打卡與 R001–R003；相關 `audit_log` 6 筆一併刪除；`shifts`、`correction_requests` 編號歸零。保留 E003 帳號與 2026-10 排程結算紀錄。
+- 正式群組加入 `STAFF_GROUP_IDS`（測試群組保留），本機與 Pi `.env.staff` 一致；Pi 備份 `.env.staff.bak-20261112b`。
+- 尚未在正式環境實測：整班補卡、取消、修改打卡、核准失敗通知、待審提醒實際發送。
