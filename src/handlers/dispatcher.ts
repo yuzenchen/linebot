@@ -28,12 +28,36 @@ export interface GroupTextContext {
   event: webhook.MessageEvent;
 }
 
+/** A DM image (SPEC-ADMIN §16). Already stored in `messages` as `type=image` with no content. */
+export interface ImageMessageContext {
+  userId: string;
+  replyToken: string | undefined;
+  /** LINE message id (used later to download the content). */
+  lineMessageId: string;
+  contentProvider: 'line' | 'external';
+  event: webhook.MessageEvent;
+}
+
+/** A group / room image (SPEC-ADMIN §16). Not stored anywhere by the dispatcher. */
+export interface GroupImageContext {
+  groupId: string;
+  sourceType: 'group' | 'room';
+  userId?: string;
+  lineMessageId: string;
+  contentProvider: 'line' | 'external';
+  event: webhook.MessageEvent;
+}
+
 export interface DispatcherDeps {
   repos: Pick<Repos, 'users' | 'messages'>;
   replier: Replier;
   handleText: (ctx: TextMessageContext) => Promise<void>;
   /** Group / room text messages; absent → every non-user source is ignored. Must never reject. */
   handleGroupText?: (ctx: GroupTextContext) => Promise<void>;
+  /** DM images (admin only); absent → the fixed non-text reply. Must never reject. */
+  handleImage?: (ctx: ImageMessageContext) => Promise<void>;
+  /** Group / room images (admin only); absent → logged and ignored. Must never reject. */
+  handleGroupImage?: (ctx: GroupImageContext) => Promise<void>;
   welcomeText: () => string;
   log?: Logger;
 }
@@ -56,11 +80,20 @@ export function defaultWelcomeText(): string {
 
 /**
  * Routes one webhook event by source and type. `source.type === 'user'` is fully handled; group /
- * room text messages go to `handleGroupText` when the profile provides it; everything else from a
- * group / room (non-text, join, leave, …) is only logged.
+ * room text messages go to `handleGroupText` and images to `handleGroupImage` when the profile
+ * provides them; everything else from a group / room (join, leave, …) is only logged. DM images go
+ * to `handleImage` when provided, otherwise they get the fixed non-text reply like other types.
  */
 export function createDispatcher(deps: DispatcherDeps) {
-  const { repos, replier, handleText, handleGroupText, welcomeText } = deps;
+  const {
+    repos,
+    replier,
+    handleText,
+    handleGroupText,
+    handleImage,
+    handleGroupImage,
+    welcomeText,
+  } = deps;
   const log = deps.log ?? logger;
 
   return async function dispatch(event: webhook.Event): Promise<void> {
@@ -79,6 +112,23 @@ export function createDispatcher(deps: DispatcherDeps) {
         text: message.text,
         mentionees: message.mention?.mentionees ?? [],
         replyToken: event.replyToken,
+        event,
+      });
+      return;
+    }
+    if (
+      handleGroupImage &&
+      (source?.type === 'group' || source?.type === 'room') &&
+      event.type === 'message' &&
+      event.message.type === 'image'
+    ) {
+      const message = event.message;
+      await handleGroupImage({
+        groupId: source.type === 'group' ? source.groupId : source.roomId,
+        sourceType: source.type,
+        userId: source.userId,
+        lineMessageId: message.id,
+        contentProvider: message.contentProvider?.type === 'external' ? 'external' : 'line',
         event,
       });
       return;
@@ -110,6 +160,16 @@ export function createDispatcher(deps: DispatcherDeps) {
           return;
         }
         repos.messages.insert({ userId, direction: 'in', type: message.type, replyToken });
+        if (handleImage && message.type === 'image') {
+          await handleImage({
+            userId,
+            replyToken,
+            lineMessageId: message.id,
+            contentProvider: message.contentProvider?.type === 'external' ? 'external' : 'line',
+            event,
+          });
+          return;
+        }
         await replier.replyOrPush(replyToken, userId, [texts.nonTextMessage], 'non_text');
         return;
       }

@@ -9,6 +9,7 @@ import { createIncidentsRepo } from './incidents.js';
 import { createJobsRepo } from './jobs.js';
 import { createMessagesRepo } from './messages.js';
 import { createPendingConfirmationsRepo } from './pendingConfirmations.js';
+import { createPendingImagesRepo } from './pendingImages.js';
 import { createPushLogRepo } from './pushLog.js';
 import { createSuggestionsRepo } from './suggestions.js';
 import { createTicketsRepo } from './tickets.js';
@@ -31,6 +32,7 @@ export function createRepos(db: Database) {
     pendingConfirmations: createPendingConfirmationsRepo(db),
     bugReports: createBugReportsRepo(db),
     groupContext: createGroupContextRepo(db),
+    pendingImages: createPendingImagesRepo(db),
   };
 }
 

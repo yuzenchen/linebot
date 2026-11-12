@@ -1,3 +1,4 @@
+import type { Readable } from 'node:stream';
 import { messagingApi } from '@line/bot-sdk';
 import { config } from '../config.js';
 
@@ -14,4 +15,15 @@ export function createLineClient(
   token: string = config.LINE_CHANNEL_ACCESS_TOKEN,
 ): messagingApi.MessagingApiClient {
   return new messagingApi.MessagingApiClient({ channelAccessToken: token });
+}
+
+/** The subset of `MessagingApiBlobClient` the admin bot uses (SPEC-ADMIN §16); tests pass a fake. */
+export interface LineBlobApi {
+  getMessageContent(messageId: string): Promise<Readable>;
+}
+
+export function createLineBlobClient(
+  token: string = config.LINE_CHANNEL_ACCESS_TOKEN,
+): messagingApi.MessagingApiBlobClient {
+  return new messagingApi.MessagingApiBlobClient({ channelAccessToken: token });
 }

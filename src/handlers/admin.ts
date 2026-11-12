@@ -5,6 +5,7 @@ import {
   enduserErrorMessage,
   type EnduserClient,
 } from '../admin/enduserClient.js';
+import { DM_CONVERSATION, type ImageAttacher, withImages } from '../admin/images.js';
 import { type AdminModelClient, runAdminQuery, type AdminRunResult } from '../admin/loop.js';
 import { createToolExecutor, MAX_REPLY_TEXT } from '../admin/tools.js';
 import { buildMessages } from '../classifier/anthropic.js';
@@ -41,6 +42,8 @@ export interface AdminHandlerDeps {
   /** T16: tickets live in the enduser bot; all ticket operations go over HTTP. */
   enduser: EnduserClient;
   model: AdminModelClient;
+  /** SPEC-ADMIN §16: pending DM images for model-bound texts; absent → text only. */
+  images?: ImageAttacher;
   config: Pick<
     Config,
     | 'ADMIN_USER_IDS'
@@ -328,7 +331,7 @@ export function createAdminTextHandler(
 
       void replier.showLoading(userId, 60);
       const context = buildContext(userId, messageId);
-      const messages = toModelMessages(ctx.text, context);
+      const textMessages = toModelMessages(ctx.text, context);
       const executor = createToolExecutor({
         eshop: deps.eshop,
         health: deps.health,
@@ -344,16 +347,30 @@ export function createAdminTextHandler(
         now,
         log,
       });
-      const run = runAdminQuery({
-        client: deps.model,
-        executor,
-        messages,
-        config,
-        userId,
-        now,
-        log,
-        requestTimeoutMs: deps.requestTimeoutMs,
-      });
+      // §16.2 steps 2–3: only model-bound texts consume pending images; the download runs inside
+      // the deadline race.
+      let imageCount = 0;
+      let imageFailed = 0;
+      const run = (async () => {
+        let messages = textMessages;
+        if (deps.images) {
+          const prepared = await deps.images.take(userId, DM_CONVERSATION);
+          imageCount = prepared.blocks.length;
+          imageFailed = prepared.failed;
+          messages = withImages(textMessages, prepared.blocks);
+        }
+        return runAdminQuery({
+          client: deps.model,
+          executor,
+          messages,
+          config,
+          userId,
+          now,
+          log,
+          requestTimeoutMs: deps.requestTimeoutMs,
+          imageCount,
+        });
+      })();
 
       const raced = await raceDeadline(run, config.REPLY_DEADLINE_MS);
       let result: AdminRunResult;
@@ -372,6 +389,7 @@ export function createAdminTextHandler(
       let text = result.text;
       if (executor.staged)
         text = `${text}\n${adminReplyConfirm(executor.staged.display, executor.staged.text)}`;
+      if (imageFailed > 0) text = `${texts.adminImageFailed}\n${text}`;
       if (cancelledNote) text = `${cancelledNote}\n${text}`;
       const tools: unknown[] = cancelledNote
         ? [
@@ -388,11 +406,16 @@ export function createAdminTextHandler(
         reply: result.piiRevealed ? texts.adminPiiRecordPlaceholder : text,
         piiRevealed: result.piiRevealed,
         latencyMs,
+        imageCount,
+        usage: result.usage,
+        model: result.servedBy,
       });
       log.info(
         {
           userId,
           messageId,
+          imageCount,
+          imageFailed,
           outcome: result.outcome,
           rounds: result.rounds,
           tools: result.tools.map((t) => t.name),

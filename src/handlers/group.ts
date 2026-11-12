@@ -1,12 +1,14 @@
 import type { webhook } from '@line/bot-sdk';
 import type { Logger } from 'pino';
 import type { EnduserClient } from '../admin/enduserClient.js';
+import { type ImageAttacher, withImages } from '../admin/images.js';
 import { type AdminModelClient, type AdminRunResult, runAdminQuery } from '../admin/loop.js';
 import { GROUP_PROMPT } from '../admin/prompt.js';
 import { createToolExecutor, GROUP_TOOL_DEFS, GROUP_TOOL_NAMES } from '../admin/tools.js';
 import { displayBugId } from '../bugs/ids.js';
 import type { ContextMessage } from '../classifier/types.js';
 import type { Config } from '../config.js';
+import type { QueryUsage } from '../db/adminQueries.js';
 import type { Repos } from '../db/repos.js';
 import { now as clockNow } from '../db/time.js';
 import type { EshopClient } from '../eshop/index.js';
@@ -38,6 +40,8 @@ export interface GroupHandlerDeps {
   /** Ticket reads only (`list_tickets` / `get_ticket`). */
   enduser: Pick<EnduserClient, 'getTicket' | 'listOpenTickets'>;
   model: AdminModelClient;
+  /** SPEC-ADMIN §16: the sender's pending images in this group; absent → text only. */
+  images?: ImageAttacher;
   config: Pick<
     Config,
     | 'GROUP_COMMAND_USER_IDS'
@@ -225,18 +229,32 @@ export function createGroupHandler(deps: GroupHandlerDeps) {
         now,
         log,
       });
-      const run = runAdminQuery({
-        client: deps.model,
-        executor,
-        messages: toModelMessages(query, context),
-        config,
-        userId: sender,
-        now,
-        log,
-        requestTimeoutMs: deps.requestTimeoutMs,
-        tools: GROUP_TOOL_DEFS,
-        systemAddendum: GROUP_PROMPT,
-      });
+      // §16.2 steps 2–3: only this sender's pending images in this group; `/bug` and help never
+      // get here, so they leave them for the next query.
+      let imageCount = 0;
+      let imageFailed = 0;
+      const run = (async () => {
+        let messages = toModelMessages(query, context);
+        if (deps.images) {
+          const prepared = await deps.images.take(sender, ctx.groupId);
+          imageCount = prepared.blocks.length;
+          imageFailed = prepared.failed;
+          messages = withImages(messages, prepared.blocks);
+        }
+        return runAdminQuery({
+          client: deps.model,
+          executor,
+          messages,
+          config,
+          userId: sender,
+          now,
+          log,
+          requestTimeoutMs: deps.requestTimeoutMs,
+          tools: GROUP_TOOL_DEFS,
+          systemAddendum: GROUP_PROMPT,
+          imageCount,
+        });
+      })();
 
       const raced = await raceDeadline(run, config.REPLY_DEADLINE_MS);
       let result: AdminRunResult;
@@ -249,11 +267,19 @@ export function createGroupHandler(deps: GroupHandlerDeps) {
       }
 
       const stored = result.piiRevealed ? texts.adminPiiRecordPlaceholder : result.text;
-      audit(sender, ctx.text, result.tools, stored, result.piiRevealed, started);
+      const replyText = imageFailed > 0 ? `${texts.adminImageFailed}\n${result.text}` : result.text;
+      const audited = result.piiRevealed ? texts.adminPiiRecordPlaceholder : replyText;
+      audit(sender, ctx.text, result.tools, audited, result.piiRevealed, started, {
+        imageCount,
+        usage: result.usage,
+        model: result.servedBy,
+      });
       log.info(
         {
           ...meta,
           userId: sender,
+          imageCount,
+          imageFailed,
           outcome: result.outcome,
           rounds: result.rounds,
           tools: result.tools.map((t) => t.name),
@@ -265,7 +291,7 @@ export function createGroupHandler(deps: GroupHandlerDeps) {
       );
 
       const opts = result.piiRevealed ? { recordAs: [texts.adminPiiRecordPlaceholder] } : undefined;
-      await send(splitReply(result.text), 'group_late_reply', opts);
+      await send(splitReply(replyText), 'group_late_reply', opts);
       repos.groupContext.insert({ groupId: ctx.groupId, direction: 'out', text: stored });
     }
   };
@@ -284,6 +310,7 @@ export function createGroupHandler(deps: GroupHandlerDeps) {
     reply: string,
     piiRevealed: boolean,
     started: number,
+    model?: { imageCount: number; usage: QueryUsage; model?: string },
   ): void {
     try {
       repos.adminQueries.insert({
@@ -293,6 +320,7 @@ export function createGroupHandler(deps: GroupHandlerDeps) {
         reply,
         piiRevealed,
         latencyMs: Math.max(0, now().getTime() - started),
+        ...model,
       });
     } catch (err) {
       log.error({ err, userId }, 'group audit insert failed');

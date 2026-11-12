@@ -23,6 +23,7 @@ const expectedTables = [
   'correction_requests',
   'payroll_runs',
   'audit_log',
+  'pending_images',
   'schema_migrations',
 ];
 
@@ -45,6 +46,7 @@ describe('runMigrations', () => {
       { version: 6, name: '006_bug_reports' },
       { version: 7, name: '007_group_context' },
       { version: 8, name: '008_staff' },
+      { version: 9, name: '009_pending_images' },
     ]);
   });
 
@@ -65,6 +67,7 @@ describe('runMigrations', () => {
         'idx_tickets_status_updated',
         'idx_bug_reports_reporter_created',
         'idx_group_context_group',
+        'idx_pending_images_user_conv',
         'idx_employees_status',
         'idx_wage_rates_employee_from',
         'idx_shifts_employee_start',

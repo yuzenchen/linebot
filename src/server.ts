@@ -88,6 +88,8 @@ function main(): void {
     replier,
     handleText: profile.handleText,
     handleGroupText: profile.handleGroupText,
+    handleImage: profile.handleImage,
+    handleGroupImage: profile.handleGroupImage,
     welcomeText: profile.welcomeText,
   });
   const app = createApp({

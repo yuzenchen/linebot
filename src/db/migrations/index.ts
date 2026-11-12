@@ -270,6 +270,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log (created_at);
 `;
 
+/**
+ * SPEC-ADMIN §16: images waiting for the sender's next model-bound text (LINE message id only, the
+ * image itself is never stored) and per-query usage columns on `admin_queries` (§16.5).
+ * `conversation` is `dm` or the groupId / roomId. `content_provider` is LINE's `contentProvider.type`
+ * (`external` images cannot be downloaded and count as unreadable).
+ */
+const pendingImages = `
+CREATE TABLE IF NOT EXISTS pending_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  conversation TEXT NOT NULL,
+  line_message_id TEXT NOT NULL UNIQUE,
+  content_provider TEXT NOT NULL DEFAULT 'line',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_images_user_conv ON pending_images (user_id, conversation, id);
+CREATE INDEX IF NOT EXISTS idx_pending_images_created ON pending_images (created_at);
+
+ALTER TABLE admin_queries ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE admin_queries ADD COLUMN input_tokens INTEGER;
+ALTER TABLE admin_queries ADD COLUMN cache_read_tokens INTEGER;
+ALTER TABLE admin_queries ADD COLUMN cache_write_tokens INTEGER;
+ALTER TABLE admin_queries ADD COLUMN output_tokens INTEGER;
+ALTER TABLE admin_queries ADD COLUMN model TEXT;
+`;
+
 export const migrations: Migration[] = [
   { version: 1, name: '001_init', sql: init },
   { version: 2, name: '002_grok_tasks', sql: grokTasks },
@@ -279,4 +305,5 @@ export const migrations: Migration[] = [
   { version: 6, name: '006_bug_reports', sql: bugReports },
   { version: 7, name: '007_group_context', sql: groupContext },
   { version: 8, name: '008_staff', sql: staff },
+  { version: 9, name: '009_pending_images', sql: pendingImages },
 ];

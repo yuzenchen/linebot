@@ -4,9 +4,15 @@ import type { Logger } from 'pino';
 import type { Config } from '../config.js';
 import type { Repos } from '../db/repos.js';
 import type { GrokGateway } from '../grok/gateway.js';
-import type { GroupTextContext, TextMessageContext } from '../handlers/dispatcher.js';
+import type {
+  GroupImageContext,
+  GroupTextContext,
+  ImageMessageContext,
+  TextMessageContext,
+} from '../handlers/dispatcher.js';
 import type { HealthChecker } from '../health/check.js';
 import type { JobQueue } from '../jobs/queue.js';
+import type { LineBlobApi } from '../line/client.js';
 import type { Replier } from '../line/replier.js';
 
 export type ProfileName = Config['BOT_PROFILE'];
@@ -22,6 +28,8 @@ export interface Shared {
   grok: GrokGateway;
   health: HealthChecker;
   logger: Logger;
+  /** LINE content download (admin images, SPEC-ADMIN §16); the admin profile builds one if absent. */
+  lineBlob?: LineBlobApi;
 }
 
 /** What a deployable bot variant plugs into the shared webhook / dispatcher / server. */
@@ -31,6 +39,10 @@ export interface BotProfile {
   handleText: (ctx: TextMessageContext) => Promise<void>;
   /** Group / room text handler (admin: SPEC-ADMIN §13; staff: SPEC-STAFF §4–6); absent → groups are ignored. Must never reject. */
   handleGroupText?: (ctx: GroupTextContext) => Promise<void>;
+  /** DM image handler (admin: SPEC-ADMIN §16); absent → fixed non-text reply. Must never reject. */
+  handleImage?: (ctx: ImageMessageContext) => Promise<void>;
+  /** Group / room image handler (admin: SPEC-ADMIN §16); absent → ignored. Must never reject. */
+  handleGroupImage?: (ctx: GroupImageContext) => Promise<void>;
   /** Reply sent on `follow`. */
   welcomeText: () => string;
   /** Extra Hono routes (e.g. `/grok/callback`); mounted inside `createApp`. */

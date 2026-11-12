@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
 import { EshopError } from '../eshop/errors.js';
+import type { QueryUsage } from '../db/adminQueries.js';
 import { logger } from '../logger.js';
 import { texts } from '../texts.js';
 import { buildSystem, CAP_INSTRUCTION } from './prompt.js';
@@ -36,6 +37,8 @@ export interface AdminRunResult {
   rounds: number;
   /** Model that actually answered the last call (differs from config on server-side fallback). */
   servedBy?: string;
+  /** Token totals over every round (SPEC-ADMIN §16.5); zeros when no call returned. */
+  usage: QueryUsage;
 }
 
 /** Unexpected `stop_reason` or an aborted budget: mapped to `model_error`. */
@@ -61,6 +64,8 @@ export interface RunAdminQueryOptions {
   tools?: readonly Anthropic.Beta.BetaTool[];
   /** Extra system text after the cached rules block (groups: `GROUP_PROMPT`). */
   systemAddendum?: string;
+  /** Image blocks in `messages` (SPEC-ADMIN §16); logged per round, never the images. */
+  imageCount?: number;
 }
 
 function textOf(res: Anthropic.Beta.BetaMessage): string {
@@ -90,6 +95,12 @@ export async function runAdminQuery(opts: RunAdminQueryOptions): Promise<AdminRu
   const messages: Anthropic.Beta.BetaMessageParam[] = [...opts.messages];
   let toolRounds = 0;
   let servedBy: string | undefined;
+  const usage: QueryUsage = {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+  };
 
   const finish = (text: string, outcome: AdminOutcome): AdminRunResult => ({
     text,
@@ -98,6 +109,7 @@ export async function runAdminQuery(opts: RunAdminQueryOptions): Promise<AdminRu
     piiRevealed: executor.piiRevealed,
     rounds: toolRounds,
     servedBy,
+    usage: { ...usage },
   });
 
   try {
@@ -127,10 +139,15 @@ export async function runAdminQuery(opts: RunAdminQueryOptions): Promise<AdminRu
       );
       servedBy = res.model;
       const u = res.usage;
+      usage.inputTokens += u?.input_tokens ?? 0;
+      usage.cacheReadTokens += u?.cache_read_input_tokens ?? 0;
+      usage.cacheWriteTokens += u?.cache_creation_input_tokens ?? 0;
+      usage.outputTokens += u?.output_tokens ?? 0;
       log.info(
         {
           userId,
           round: toolRounds,
+          imageCount: opts.imageCount ?? 0,
           stopReason: res.stop_reason,
           model: res.model,
           usage: {

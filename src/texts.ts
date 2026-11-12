@@ -33,6 +33,8 @@ export const texts = {
   adminOnly: '此帳號僅供內部使用。',
   adminWelcome: '管理端 bot 已就緒，可以問訂單與庫存狀況。',
   adminAckPending: '查詢中，稍後回覆。',
+  adminImageReceived: '已收到圖片，請問要查什麼？例如：這筆出貨了嗎',
+  adminImageFailed: '有圖片無法讀取，以下只依文字回答。',
   adminModelUnavailable: '模型暫時無法回應，請稍後再試。',
   adminModelRefused: '這個問題無法處理，請換個說法再試。',
   adminEmptyAnswer: '沒有查到可回覆的內容，請換個問法。',

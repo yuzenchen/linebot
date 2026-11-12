@@ -392,6 +392,12 @@ LINE 的圖片與文字是兩則訊息，而且圖片訊息無法 tag bot，所�
 - 待用圖片存 SQLite（migration 009 新表 `pending_images`：`user_id`、`conversation`（`dm` 或 groupId / roomId）、`line_message_id`、`created_at`），讀取時與啟動時清掉超過 10 分鐘的資料。
 - dispatcher 目前只把群組文字訊息交給 `handleGroupText`；新增群組圖片的處理入口，其他群組事件仍只記 log。
 - 測試用 mock LINE blob client、mock model client 與臨時 SQLite；縮圖測試用程式產生的小圖，不放真實截圖。
+- 實作決定（T22）：
+  - 私訊「只回一次」的判斷：同一人私訊的上一張待用圖片在 10 秒內（`IMAGE_ACK_BURST_MS`）→ 視為同一批（含 LINE 圖片組），不再回 `adminImageReceived`；判斷與寫入之間沒有 await，同時到達的事件也只回一次。不依賴 `imageSet`（各張可能亂序或分在不同 webhook）。
+  - `pending_images` 另有 `content_provider` 欄（收到圖片時的 `contentProvider.type`），讓交給模型時能判斷 `external` 圖片為無法讀取；`line_message_id` 唯一，LINE 重送不重複記。
+  - 新增時就只保留同人同對話最新 3 張；取用時刪掉該人該對話全部待用圖片，並順手清掉所有人過期的資料。
+  - 下載超過 20MB 視為無法讀取；`sharp` 延遲載入（原生模組壞掉只影響圖片），關閉其快取，套用 EXIF 方向，透明背景補白。
+  - 只有交給模型的查詢寫 token 與 `model`；私訊快捷指令等不經模型的列 `image_count = 0`、token 與 `model` 為 NULL。
 
 ### 16.7 完成定義
 
