@@ -10,6 +10,10 @@
  * Notifications (requests → every admin, decisions and failed approvals → applicant with group
  * fallback) go through the messenger, which never throws; every handled message gets a fallback
  * reply on failure.
+ *
+ * §17 batches: multi-line 補卡 (employee) and 代補 (admin) answer one line per entry; a batch
+ * request sends every admin one notice; `核准|駁回 R… R…` / `核准全部` answer one line per id and
+ * merge each applicant's results into one message (per group on fallback).
  */
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
@@ -18,8 +22,10 @@ import { now as clockNow } from '../db/time.js';
 import type { Replier } from '../line/replier.js';
 import { logger } from '../logger.js';
 import {
+  type AdminCorrectionItem,
   type CommandKeyword,
   type CorrectionTime,
+  MAX_BATCH,
   parseStaffCommand,
   type StaffCommand,
 } from '../staff/commands.js';
@@ -29,14 +35,27 @@ import type { StaffBackup } from '../staff/backup.js';
 import type { PayrollReporter } from '../staff/payrollReport.js';
 import { backupFailureOutstanding } from '../staff/scheduler.js';
 import type {
+  BatchDecisionItem,
+  BatchRequestOutcome,
   CancelCorrectionOutcome,
   CorrectionInput,
+  RejectCorrectionOutcome,
   RequestCorrectionOutcome,
+  RequestLineOutcome,
   StaffService,
 } from '../staff/service.js';
 import { type Month, taipeiDate, taipeiMonth } from '../staff/time.js';
 import {
   staffAdminCorrectionApplied,
+  staffAdminBatchRefused,
+  staffAdminCorrectionBatchNotice,
+  staffApproveAllRemaining,
+  staffBatchDuplicateReason,
+  staffBatchMalformed,
+  staffBatchRefused,
+  staffBatchRequested,
+  staffBatchTooMany,
+  staffBatchTotal,
   staffAdminCorrectionNotice,
   staffAdminRegistrationNotice,
   staffAlreadyIn,
@@ -104,6 +123,9 @@ const EMPLOYEE_DM_TYPES = new Set<StaffCommand['type']>([
   'punch',
   'register',
   'correction',
+  'correctionBatch',
+  'batchMalformed',
+  'batchTooMany',
   'cancelCorrection',
   'myShifts',
   'myPay',
@@ -226,6 +248,253 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
     }
   }
 
+  // ------------------------------------------------------------------ §17 batches
+
+  /** Why a request line was refused (shared wording with the single answers). */
+  function refusalReason(outcome: Exclude<RequestLineOutcome, { kind: 'requested' }>): string {
+    switch (outcome.kind) {
+      case 'future':
+        return staffTexts.correctionFuture;
+      case 'tooOld':
+        return staffTexts.correctionTooOld;
+      case 'tooLong':
+        return staffCorrectionTooLong(config.STAFF_MAX_SHIFT_HOURS);
+      case 'duplicate':
+        return staffBatchDuplicateReason(displayCorrectionId(outcome.request.id));
+    }
+  }
+
+  /**
+   * §17.1 multi-line 補卡 (group or DM): one answer line per entry plus the total; every admin
+   * gets one notice listing the requests this message created (none → no notice).
+   */
+  async function correctionBatch(
+    outcome: BatchRequestOutcome,
+    items: CorrectionTime[],
+    inGroup: boolean,
+  ): Promise<string[]> {
+    if (outcome.kind !== 'batch') return [await correctionRequest(outcome, inGroup)];
+    const lines: string[] = [];
+    const created: {
+      displayId: string;
+      at: string;
+      kind: CorrectionTime['kind'];
+      endAt: string | null;
+    }[] = [];
+    let sent = 0;
+    outcome.results.forEach((r, i) => {
+      if (r.kind === 'requested') {
+        const id = displayCorrectionId(r.request.id);
+        sent += 1;
+        lines.push(staffBatchRequested(id, r.request.at, r.request.kind, r.request.end_at));
+        if (!r.resent) {
+          created.push({
+            displayId: id,
+            at: r.request.at,
+            kind: r.request.kind,
+            endAt: r.request.end_at,
+          });
+        }
+        return;
+      }
+      const c = items[i]!;
+      const endIso = c.kind === 'shift' ? c.endAt.toISOString() : null;
+      lines.push(staffBatchRefused(c.at.toISOString(), c.kind, endIso, refusalReason(r)));
+    });
+    if (created.length > 0) {
+      await messenger.notifyAdmins(
+        staffAdminCorrectionBatchNotice(outcome.employee.name, created),
+        'staff_correction_request',
+      );
+    }
+    return [...lines, staffBatchTotal(sent)];
+  }
+
+  /** Answer to a multi-line 補卡 with a bad line (`admin` adds the 代補 usage). */
+  function batchMalformedAnswer(line: number, text: string, admin: boolean): string[] {
+    return [
+      staffBatchMalformed(line, text),
+      staffTexts.usage.補卡,
+      ...(admin ? [staffTexts.adminCorrectionUsage] : []),
+    ];
+  }
+
+  /** One applicant-facing result line (DM wording and its group fallback). */
+  interface ApplicantNotice {
+    employee: { id: number; user_id: string };
+    groupId: string | null;
+    dm: string;
+    group: string;
+  }
+
+  /** §17.3: one message per applicant (DM, else one per group the requests came from). */
+  async function notifyApplicants(notices: ApplicantNotice[], reason: string): Promise<void> {
+    const byEmployee = new Map<number, ApplicantNotice[]>();
+    for (const n of notices) {
+      byEmployee.set(n.employee.id, [...(byEmployee.get(n.employee.id) ?? []), n]);
+    }
+    for (const list of byEmployee.values()) {
+      await messenger.dmOrGroups(
+        list[0]!.employee.user_id,
+        list.map((n) => n.dm),
+        list.map((n) => ({ groupId: n.groupId, text: n.group })),
+        reason,
+      );
+    }
+  }
+
+  /** §17.3 `核准 R… R…` / `核准全部`: one answer line per id, merged applicant notices. */
+  async function approvalBatch(items: BatchDecisionItem[]): Promise<string[]> {
+    const max = config.STAFF_MAX_SHIFT_HOURS;
+    const lines: string[] = [];
+    const notices: ApplicantNotice[] = [];
+    const notified = new Set<number>();
+    const approvedNotice = (
+      employee: ApplicantNotice['employee'] & { name: string },
+      req: { id: number; group_id: string | null },
+    ) => {
+      if (notified.has(req.id)) return;
+      notified.add(req.id);
+      const reqId = displayCorrectionId(req.id);
+      notices.push({
+        employee,
+        groupId: req.group_id,
+        dm: staffCorrectionApprovedDm(reqId),
+        group: staffCorrectionDecisionGroup(employee.name, reqId, true),
+      });
+    };
+    for (const { requestId, outcome: r } of items) {
+      const id = displayCorrectionId(requestId);
+      switch (r.kind) {
+        case 'notFound':
+          lines.push(staffNotFound(id));
+          break;
+        case 'alreadyDecided':
+          lines.push(staffCorrectionAlreadyDecided(id, r.request.status));
+          break;
+        case 'failed': {
+          const conflict = conflictView(r.conflictShift);
+          notified.add(requestId);
+          notices.push({
+            employee: r.employee,
+            groupId: r.request.group_id,
+            dm: staffCorrectionFailedDm(id, r.reason, conflict, max),
+            group: staffCorrectionFailedGroup(r.employee.name, id, r.reason, conflict, max),
+          });
+          lines.push(failureText(id, r));
+          break;
+        }
+        case 'approved':
+          approvedNotice(r.employee, r.request);
+          if (r.pairedRequest) approvedNotice(r.employee, r.pairedRequest);
+          lines.push(
+            staffApprovedCorrection(
+              id,
+              r.employee.name,
+              r.request.at,
+              r.request.kind,
+              r.pairedRequest ? displayCorrectionId(r.pairedRequest.id) : null,
+              r.request.end_at,
+            ),
+          );
+          break;
+        case 'pairedApproved':
+          approvedNotice(r.employee, r.request);
+          lines.push(
+            staffApprovedCorrection(
+              id,
+              r.employee.name,
+              r.request.at,
+              r.request.kind,
+              null,
+              r.request.end_at,
+            ),
+          );
+          break;
+      }
+    }
+    await notifyApplicants(notices, 'staff_correction_decided');
+    return lines;
+  }
+
+  /** §17.3 `駁回 R… R…`. */
+  async function rejectionBatch(
+    items: { requestId: number; outcome: RejectCorrectionOutcome }[],
+  ): Promise<string[]> {
+    const lines: string[] = [];
+    const notices: ApplicantNotice[] = [];
+    for (const { requestId, outcome: r } of items) {
+      const id = displayCorrectionId(requestId);
+      if (r.kind === 'notFound') {
+        lines.push(staffNotFound(id));
+      } else if (r.kind === 'alreadyDecided') {
+        lines.push(staffCorrectionAlreadyDecided(id, r.request.status));
+      } else {
+        notices.push({
+          employee: r.employee,
+          groupId: r.request.group_id,
+          dm: staffCorrectionRejectedDm(id),
+          group: staffCorrectionDecisionGroup(r.employee.name, id, false),
+        });
+        lines.push(staffRejectedCorrection(id, r.employee.name));
+      }
+    }
+    await notifyApplicants(notices, 'staff_correction_rejected');
+    return lines;
+  }
+
+  /**
+   * §6 代補 of one line: the answer line and the settled months it touched. In a §17.2 batch
+   * (`batch`), a window refusal names the line it is about.
+   */
+  function adminCorrectionLine(
+    userId: string,
+    item: AdminCorrectionItem,
+    at: Date,
+    batch: boolean,
+  ): { line: string; settled: Month[] } {
+    const eid = displayEmployeeId(item.employeeId);
+    const r = service.adminCorrection(userId, item.employeeId, correctionInput(item), at);
+    const refused = (reason: string) => ({
+      line: batch
+        ? staffAdminBatchRefused(
+            eid,
+            item.at.toISOString(),
+            item.kind,
+            item.kind === 'shift' ? item.endAt.toISOString() : null,
+            reason,
+          )
+        : reason,
+      settled: [],
+    });
+    switch (r.kind) {
+      case 'notFound':
+        return { line: staffNotFound(eid), settled: [] };
+      case 'notApproved':
+        return { line: staffNotApproved(eid, r.employee.name), settled: [] };
+      case 'future':
+        return refused(staffTexts.correctionFuture);
+      case 'tooOld':
+        return refused(staffTexts.correctionTooOld);
+      case 'tooLong':
+        return refused(staffCorrectionTooLong(config.STAFF_MAX_SHIFT_HOURS));
+      case 'failed':
+        return { line: failureText(displayCorrectionId(r.request.id), r), settled: [] };
+      case 'applied':
+        return {
+          line: staffAdminCorrectionApplied(
+            eid,
+            r.employee.name,
+            r.request.at,
+            r.request.kind,
+            displayCorrectionId(r.request.id),
+            r.request.end_at,
+          ),
+          settled: r.settledMonths,
+        };
+    }
+  }
+
   // ------------------------------------------------------------------ group
 
   async function groupCommand(
@@ -285,6 +554,15 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         const r = service.requestCorrection(userId, correctionInput(cmd), groupId, at);
         return [await correctionRequest(r, true)];
       }
+      case 'correctionBatch': {
+        const inputs = cmd.items.map(correctionInput);
+        const r = service.requestCorrections(userId, inputs, groupId, at);
+        return correctionBatch(r, cmd.items, true);
+      }
+      case 'batchMalformed':
+        return batchMalformedAnswer(cmd.line, cmd.text, false);
+      case 'batchTooMany':
+        return cmd.keyword === '補卡' ? [staffBatchTooMany(MAX_BATCH)] : null;
       case 'cancelCorrection':
         return [cancelAnswer(service.cancelCorrection(userId, cmd.requestId, at), cmd.requestId)];
       case 'malformed':
@@ -343,6 +621,17 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         const r = service.requestCorrection(userId, correctionInput(cmd), null, at);
         return [await correctionRequest(r, false)];
       }
+      case 'correctionBatch': {
+        const inputs = cmd.items.map(correctionInput);
+        const r = service.requestCorrections(userId, inputs, null, at);
+        return correctionBatch(r, cmd.items, false);
+      }
+      case 'batchMalformed':
+        return batchMalformedAnswer(cmd.line, cmd.text, false);
+      case 'batchTooMany':
+        return cmd.keyword === '補卡'
+          ? [staffBatchTooMany(MAX_BATCH)]
+          : [staffTexts.unknownCommand];
       case 'cancelCorrection':
         return [cancelAnswer(service.cancelCorrection(userId, cmd.requestId, at), cmd.requestId)];
       case 'myShifts':
@@ -493,37 +782,35 @@ export function createStaffHandlers(deps: StaffHandlerDeps) {
         );
         return [staffRejectedCorrection(id, r.employee.name)];
       }
-      case 'adminCorrection': {
-        const eid = displayEmployeeId(cmd.employeeId);
-        const r = service.adminCorrection(userId, cmd.employeeId, correctionInput(cmd), at);
-        switch (r.kind) {
-          case 'notFound':
-            return [staffNotFound(eid)];
-          case 'notApproved':
-            return [staffNotApproved(eid, r.employee.name)];
-          case 'future':
-            return [staffTexts.correctionFuture];
-          case 'tooOld':
-            return [staffTexts.correctionTooOld];
-          case 'tooLong':
-            return [staffCorrectionTooLong(config.STAFF_MAX_SHIFT_HOURS)];
-          case 'failed':
-            return [failureText(displayCorrectionId(r.request.id), r)];
-          case 'applied':
-            return [
-              staffAdminCorrectionApplied(
-                eid,
-                r.employee.name,
-                r.request.at,
-                r.request.kind,
-                displayCorrectionId(r.request.id),
-                r.request.end_at,
-              ),
-              ...settledLines(r.settledMonths),
-            ];
-        }
-        break;
+      case 'approveCorrections':
+        return approvalBatch(service.approveCorrections(userId, cmd.requestIds, at));
+      case 'approveAllCorrections': {
+        const r = service.approveAllCorrections(userId, MAX_BATCH, at);
+        if (r.kind === 'none') return [staffTexts.noPendingCorrections];
+        const lines = await approvalBatch(r.items);
+        return r.remaining > 0 ? [...lines, staffApproveAllRemaining(r.remaining)] : lines;
       }
+      case 'rejectCorrections':
+        return rejectionBatch(service.rejectCorrections(userId, cmd.requestIds, at));
+      case 'adminCorrection': {
+        const { line, settled } = adminCorrectionLine(userId, cmd, at, false);
+        return [line, ...settledLines(settled)];
+      }
+      case 'adminCorrectionBatch': {
+        // §17.2: in line order, each line sees what the earlier ones wrote.
+        const lines: string[] = [];
+        const settled: Month[] = [];
+        for (const item of cmd.items) {
+          const r = adminCorrectionLine(userId, item, at, true);
+          lines.push(r.line);
+          settled.push(...r.settled);
+        }
+        return [...lines, ...settledLines([...new Set(settled)].sort())];
+      }
+      case 'batchMalformed':
+        return batchMalformedAnswer(cmd.line, cmd.text, true);
+      case 'batchTooMany':
+        return [staffBatchTooMany(MAX_BATCH)];
       case 'editShift': {
         const id = displayShiftId(cmd.shiftId);
         const r = service.editShift(

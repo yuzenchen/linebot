@@ -150,6 +150,24 @@ export type ApproveCorrectionOutcome =
   | { kind: 'notFound' }
   | { kind: 'alreadyDecided'; request: CorrectionRow };
 
+/** One line of a §17.1 multi-line 補卡 (the employee checks were done once for the message). */
+export type RequestLineOutcome = Exclude<RequestCorrectionOutcome, NotEmployeeOutcome>;
+
+export type BatchRequestOutcome =
+  NotEmployeeOutcome | { kind: 'batch'; employee: EmployeeRow; results: RequestLineOutcome[] };
+
+/** One id of a §17.3 batch approval, in processing order. */
+export interface BatchDecisionItem {
+  requestId: number;
+  outcome:
+    | ApproveCorrectionOutcome
+    /** Already approved earlier in this batch as another request's `pairedRequest`. */
+    | { kind: 'pairedApproved'; request: CorrectionRow; employee: EmployeeRow };
+}
+
+export type ApproveAllOutcome =
+  { kind: 'none' } | { kind: 'done'; items: BatchDecisionItem[]; remaining: number };
+
 export type RejectCorrectionOutcome =
   | { kind: 'rejected'; request: CorrectionRow; employee: EmployeeRow }
   | { kind: 'notFound' }
@@ -457,6 +475,142 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
     });
   }
 
+  /** §6 request for an active employee (shared by single and §17.1 multi-line 補卡). */
+  function requestOne(
+    e: EmployeeRow,
+    userId: string,
+    c: CorrectionInput,
+    groupId: string | null,
+    now: Date,
+  ): RequestLineOutcome {
+    const bad = checkRequest(e, c, now);
+    if (bad) return bad;
+    const endAt = correctionEnd(c);
+    const dup = repo.corrections.findPendingDuplicate(e.id, c.kind, c.at, endAt);
+    if (dup) {
+      const age = now.getTime() - Date.parse(dup.created_at);
+      return age >= 0 && age <= RESEND_WINDOW_MS
+        ? { kind: 'requested', employee: e, request: dup, resent: true }
+        : { kind: 'duplicate', employee: e, request: dup };
+    }
+    const id = repo.corrections.insert(
+      { employeeId: e.id, kind: c.kind, at: c.at, endAt, requestedBy: userId, groupId },
+      now,
+    );
+    return {
+      kind: 'requested',
+      employee: e,
+      request: repo.corrections.get(id)!,
+      resent: false,
+    };
+  }
+
+  function approveCorrection(
+    actor: string,
+    requestId: number,
+    now: Date,
+  ): ApproveCorrectionOutcome {
+    return db.transaction((): ApproveCorrectionOutcome => {
+      const request = repo.corrections.get(requestId);
+      if (!request) return { kind: 'notFound' };
+      if (request.status !== 'pending') return { kind: 'alreadyDecided', request };
+      const employee = repo.employees.get(request.employee_id)!;
+      const before = correctionView(request);
+      const result = applyRequest(request, employee, actor, 'correction', now);
+      const target = displayCorrectionId(requestId);
+      if ('kind' in result) {
+        audit(
+          actor,
+          'approve_correction',
+          target,
+          before,
+          {
+            ...correctionView(result.request),
+            reason: result.reason,
+            conflictShift: result.conflictShift ? displayShiftId(result.conflictShift.id) : null,
+          },
+          now,
+        );
+        return result;
+      }
+      audit(
+        actor,
+        'approve_correction',
+        target,
+        before,
+        {
+          ...correctionView(result.request),
+          shift: shiftView(result.shift),
+          pairedRequest: result.pairedRequest ? displayCorrectionId(result.pairedRequest.id) : null,
+        },
+        now,
+      );
+      return { kind: 'approved', ...result };
+    })();
+  }
+
+  function rejectCorrection(actor: string, requestId: number, now: Date): RejectCorrectionOutcome {
+    return db.transaction((): RejectCorrectionOutcome => {
+      const request = repo.corrections.get(requestId);
+      if (!request) return { kind: 'notFound' };
+      if (request.status !== 'pending') return { kind: 'alreadyDecided', request };
+      repo.corrections.decide(requestId, 'rejected', null, null, actor, now);
+      const after = repo.corrections.get(requestId)!;
+      audit(
+        actor,
+        'reject_correction',
+        displayCorrectionId(requestId),
+        correctionView(request),
+        correctionView(after),
+        now,
+      );
+      return {
+        kind: 'rejected',
+        request: after,
+        employee: repo.employees.get(request.employee_id)!,
+      };
+    })();
+  }
+
+  /**
+   * §17.3 processing order: existing requests by correction time, earliest first (then id), so
+   * one employee's 上班 is applied before the 下班 that pairs with it; unknown ids follow in the
+   * order typed.
+   */
+  function decisionOrder(requestIds: number[]): number[] {
+    const found: CorrectionRow[] = [];
+    const missing: number[] = [];
+    for (const id of requestIds) {
+      const r = repo.corrections.get(id);
+      if (r) found.push(r);
+      else missing.push(id);
+    }
+    found.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id);
+    return [...found.map((r) => r.id), ...missing];
+  }
+
+  /**
+   * §17.3 `核准 R004 R005 …` in `decisionOrder`; each item succeeds or fails on its own. A
+   * request this batch already approved as another's `pairedRequest` is `pairedApproved`.
+   */
+  function approveCorrections(actor: string, requestIds: number[], now: Date): BatchDecisionItem[] {
+    return db.transaction((): BatchDecisionItem[] => {
+      const paired = new Set<number>();
+      return decisionOrder(requestIds).map((requestId): BatchDecisionItem => {
+        if (paired.has(requestId)) {
+          const request = repo.corrections.get(requestId)!;
+          const employee = repo.employees.get(request.employee_id)!;
+          return { requestId, outcome: { kind: 'pairedApproved', request, employee } };
+        }
+        const outcome = approveCorrection(actor, requestId, now);
+        if (outcome.kind === 'approved' && outcome.pairedRequest) {
+          paired.add(outcome.pairedRequest.id);
+        }
+        return { requestId, outcome };
+      });
+    })();
+  }
+
   return {
     repo,
 
@@ -610,26 +764,39 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
       return db.transaction((): RequestCorrectionOutcome => {
         const e = activeEmployee(userId);
         if (!isEmployee(e)) return e;
-        const bad = checkRequest(e, c, now);
-        if (bad) return bad;
-        const endAt = correctionEnd(c);
-        const dup = repo.corrections.findPendingDuplicate(e.id, c.kind, c.at, endAt);
-        if (dup) {
-          const age = now.getTime() - Date.parse(dup.created_at);
-          return age >= 0 && age <= RESEND_WINDOW_MS
-            ? { kind: 'requested', employee: e, request: dup, resent: true }
-            : { kind: 'duplicate', employee: e, request: dup };
-        }
-        const id = repo.corrections.insert(
-          { employeeId: e.id, kind: c.kind, at: c.at, endAt, requestedBy: userId, groupId },
-          now,
-        );
-        return {
-          kind: 'requested',
-          employee: e,
-          request: repo.corrections.get(id)!,
-          resent: false,
-        };
+        return requestOne(e, userId, c, groupId, now);
+      })();
+    },
+
+    /**
+     * §17.1 multi-line 補卡: each line is checked like a single request, in order. A line equal
+     * to an earlier line of the same message is a `duplicate` of the request that line made (or
+     * repeats its refusal), even within the 60 s resend window; a resend of the whole message
+     * still answers `requested` / `resent` per line.
+     */
+    requestCorrections(
+      userId: string,
+      inputs: CorrectionInput[],
+      groupId: string | null,
+      now: Date,
+    ): BatchRequestOutcome {
+      return db.transaction((): BatchRequestOutcome => {
+        const e = activeEmployee(userId);
+        if (!isEmployee(e)) return e;
+        const seen = new Map<string, RequestLineOutcome>();
+        const results = inputs.map((c): RequestLineOutcome => {
+          const key = `${c.kind}|${c.at.toISOString()}|${correctionEnd(c)?.toISOString() ?? ''}`;
+          const earlier = seen.get(key);
+          if (earlier) {
+            return earlier.kind === 'requested' || earlier.kind === 'duplicate'
+              ? { kind: 'duplicate', employee: e, request: earlier.request }
+              : earlier;
+          }
+          const outcome = requestOne(e, userId, c, groupId, now);
+          seen.set(key, outcome);
+          return outcome;
+        });
+        return { kind: 'batch', employee: e, results };
       })();
     },
 
@@ -665,69 +832,37 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
       })();
     },
 
-    approveCorrection(actor: string, requestId: number, now: Date): ApproveCorrectionOutcome {
-      return db.transaction((): ApproveCorrectionOutcome => {
-        const request = repo.corrections.get(requestId);
-        if (!request) return { kind: 'notFound' };
-        if (request.status !== 'pending') return { kind: 'alreadyDecided', request };
-        const employee = repo.employees.get(request.employee_id)!;
-        const before = correctionView(request);
-        const result = applyRequest(request, employee, actor, 'correction', now);
-        const target = displayCorrectionId(requestId);
-        if ('kind' in result) {
-          audit(
-            actor,
-            'approve_correction',
-            target,
-            before,
-            {
-              ...correctionView(result.request),
-              reason: result.reason,
-              conflictShift: result.conflictShift ? displayShiftId(result.conflictShift.id) : null,
-            },
-            now,
-          );
-          return result;
-        }
-        audit(
-          actor,
-          'approve_correction',
-          target,
-          before,
-          {
-            ...correctionView(result.request),
-            shift: shiftView(result.shift),
-            pairedRequest: result.pairedRequest
-              ? displayCorrectionId(result.pairedRequest.id)
-              : null,
-          },
-          now,
-        );
-        return { kind: 'approved', ...result };
+    approveCorrection,
+
+    rejectCorrection,
+
+    approveCorrections,
+
+    /** §17.3 `核准全部`: the oldest pending requests (by id), at most `max`; `remaining` after. */
+    approveAllCorrections(actor: string, max: number, now: Date): ApproveAllOutcome {
+      return db.transaction((): ApproveAllOutcome => {
+        const ids = repo.corrections
+          .listPending()
+          .slice(0, max)
+          .map((r) => r.id);
+        if (ids.length === 0) return { kind: 'none' };
+        const items = approveCorrections(actor, ids, now);
+        return { kind: 'done', items, remaining: repo.corrections.listPending().length };
       })();
     },
 
-    rejectCorrection(actor: string, requestId: number, now: Date): RejectCorrectionOutcome {
-      return db.transaction((): RejectCorrectionOutcome => {
-        const request = repo.corrections.get(requestId);
-        if (!request) return { kind: 'notFound' };
-        if (request.status !== 'pending') return { kind: 'alreadyDecided', request };
-        repo.corrections.decide(requestId, 'rejected', null, null, actor, now);
-        const after = repo.corrections.get(requestId)!;
-        audit(
-          actor,
-          'reject_correction',
-          displayCorrectionId(requestId),
-          correctionView(request),
-          correctionView(after),
-          now,
-        );
-        return {
-          kind: 'rejected',
-          request: after,
-          employee: repo.employees.get(request.employee_id)!,
-        };
-      })();
+    /** §17.3 `駁回 R004 R005 …`, same order as `approveCorrections`; each item on its own. */
+    rejectCorrections(
+      actor: string,
+      requestIds: number[],
+      now: Date,
+    ): { requestId: number; outcome: RejectCorrectionOutcome }[] {
+      return db.transaction(() =>
+        decisionOrder(requestIds).map((requestId) => ({
+          requestId,
+          outcome: rejectCorrection(actor, requestId, now),
+        })),
+      )();
     },
 
     /** §6 代補: recorded as a correction request decided by `actor` at once (source `admin`). */

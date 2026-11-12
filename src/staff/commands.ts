@@ -23,6 +23,9 @@ export type CorrectionKind = PunchKind | 'shift';
 /** Longest accepted registration name (characters). */
 export const MAX_NAME_LENGTH = 20;
 
+/** §17: most lines in a multi-line 補卡 / ids in one 核准 / 駁回. */
+export const MAX_BATCH = 12;
+
 /** A one-punch correction as typed, resolved to a Taipei date and the matching instant. */
 export interface PunchCorrectionTime {
   date: LocalDate;
@@ -48,6 +51,9 @@ export interface ShiftCorrectionTime {
 }
 
 export type CorrectionTime = PunchCorrectionTime | ShiftCorrectionTime;
+
+/** One admin 代補 line: `補卡 E001 …`. */
+export type AdminCorrectionItem = { employeeId: number } & CorrectionTime;
 
 /** First word of every command; `malformed` echoes it so the caller can show usage. */
 export type CommandKeyword =
@@ -89,6 +95,23 @@ export type StaffCommand =
   | { type: 'rejectRegistration'; employeeId: number }
   | { type: 'approveCorrection'; requestId: number }
   | { type: 'rejectCorrection'; requestId: number }
+  /** §17.3 `核准 R004 R005` / `駁回 R004、R005`: 2–12 distinct ids, in the order typed. */
+  | { type: 'approveCorrections'; requestIds: number[] }
+  | { type: 'rejectCorrections'; requestIds: number[] }
+  /** §17.3 `核准全部`. */
+  | { type: 'approveAllCorrections' }
+  /** §17.1 multi-line 補卡 (2–12 non-blank lines, all employee requests). */
+  | { type: 'correctionBatch'; items: CorrectionTime[] }
+  /** §17.2 multi-line 代補 (2–12 non-blank lines, all `補卡 E001 …`). */
+  | { type: 'adminCorrectionBatch'; items: AdminCorrectionItem[] }
+  /**
+   * §17.1 a multi-line 補卡 with a line that is not a usable 補卡 of the same sort as the first
+   * line: the whole message is refused. `line` is 1-based in the trimmed message (blank lines
+   * count, so it matches what the sender sees); `text` is that line, trimmed.
+   */
+  | { type: 'batchMalformed'; line: number; text: string }
+  /** §17: more than MAX_BATCH 補卡 lines or 核准 / 駁回 ids; the whole message is refused. */
+  | { type: 'batchTooMany'; keyword: '補卡' | '核准' | '駁回' }
   /** `effectiveFrom` null = from today (the caller resolves it with its own `now`). */
   | { type: 'setWage'; employeeId: number; hourlyWage: number; effectiveFrom: LocalDate | null }
   | { type: 'listShiftsForDelete'; employeeId: number; date: LocalDate }
@@ -287,14 +310,99 @@ function parseOptionalMonth(
 }
 
 /**
+ * `R004 R005,R006、R007` (after the keyword) → distinct ids in the order typed; null when there
+ * is no id or any piece is not a correction id. Full-width `，` is already folded to `,`.
+ */
+function parseRequestIds(args: string[]): number[] | null {
+  const pieces = args.flatMap((a) => a.split(/[,、]/)).filter(Boolean);
+  if (pieces.length === 0) return null;
+  const ids: number[] = [];
+  for (const piece of pieces) {
+    const id = parseCorrectionId(piece);
+    if (id === null) return null;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/** `核准|駁回 R…` with one id (§6, unchanged) or several (§17.3). */
+function requestDecision(
+  kw: '核准' | '駁回',
+  args: string[],
+  malformed: StaffCommand,
+): StaffCommand {
+  const ids = parseRequestIds(args);
+  if (!ids) return malformed;
+  const approve = kw === '核准';
+  if (ids.length === 1) {
+    return approve
+      ? { type: 'approveCorrection', requestId: ids[0]! }
+      : { type: 'rejectCorrection', requestId: ids[0]! };
+  }
+  if (ids.length > MAX_BATCH) return { type: 'batchTooMany', keyword: kw };
+  return approve
+    ? { type: 'approveCorrections', requestIds: ids }
+    : { type: 'rejectCorrections', requestIds: ids };
+}
+
+/**
+ * §17.1 / §17.2: a message of two or more non-blank lines whose first line starts with 補卡 is a
+ * batch; undefined = not a batch (the message is parsed as one command, as before).
+ */
+function parseCorrectionBatch(trimmed: string, now: Date): StaffCommand | undefined {
+  const entries = trimmed
+    .split(/\r\n|\r|\n/)
+    .map((raw, i) => ({ text: raw.trim(), line: i + 1 }))
+    .filter((e) => e.text !== '');
+  if (entries.length < 2) return undefined;
+  if (toHalfWidth(entries[0]!.text).split(/\s+/)[0] !== '補卡') return undefined;
+  if (entries.length > MAX_BATCH) return { type: 'batchTooMany', keyword: '補卡' };
+
+  const parsed = entries.map((e) => parseSingleCommand(e.text, now));
+  const first = parsed[0];
+  const kind =
+    first?.type === 'correction' || first?.type === 'adminCorrection' ? first.type : null;
+  const bad = parsed.findIndex((c) => kind === null || c?.type !== kind);
+  if (bad !== -1) {
+    return { type: 'batchMalformed', line: entries[bad]!.line, text: entries[bad]!.text };
+  }
+  if (kind === 'correction') {
+    return {
+      type: 'correctionBatch',
+      items: parsed.map((c) => withoutType<CorrectionTime>(c!)),
+    };
+  }
+  return {
+    type: 'adminCorrectionBatch',
+    items: parsed.map((c) => withoutType<AdminCorrectionItem>(c!)),
+  };
+}
+
+/** A parsed line without its `type` tag (the caller checked which command it is). */
+function withoutType<R>(c: StaffCommand): R {
+  const out: Partial<StaffCommand> = { ...c };
+  delete out.type;
+  return out as R;
+}
+
+/**
  * Parses one message. `now` resolves year-less dates and default months (Taipei).
  * Returns null for anything that is not a staff command (ordinary chat).
  */
 export function parseStaffCommand(text: string, now: Date): StaffCommand | null {
   const trimmed = text.trim();
+  return parseCorrectionBatch(trimmed, now) ?? parseSingleCommand(trimmed, now);
+}
+
+/** One command: a single line, or a non-batch message whose line breaks are plain whitespace. */
+function parseSingleCommand(trimmed: string, now: Date): StaffCommand | null {
   // §5: punches only when the whole message is exactly 上班 / 下班.
   if (trimmed === '上班') return { type: 'punch', kind: 'in' };
   if (trimmed === '下班') return { type: 'punch', kind: 'out' };
+  // §17.3 `核准全部` is written as one word (`核准 全部` is handled under 核准).
+  if (toHalfWidth(trimmed).replace(/\s+/g, '') === '核准全部') {
+    return { type: 'approveAllCorrections' };
+  }
 
   const tokens = toHalfWidth(trimmed).split(/\s+/).filter(Boolean);
   const keyword = tokens[0];
@@ -337,15 +445,13 @@ export function parseStaffCommand(text: string, now: Date): StaffCommand | null 
         const wage = args.length === 3 && args[1] === '時薪' ? parseWage(args[2]) : null;
         return wage ? { type: 'approveRegistration', employeeId, hourlyWage: wage } : malformed;
       }
-      const requestId = args.length === 1 ? parseCorrectionId(args[0]!) : null;
-      return requestId ? { type: 'approveCorrection', requestId } : malformed;
+      if (args.length === 1 && args[0] === '全部') return { type: 'approveAllCorrections' };
+      return requestDecision('核准', args, malformed);
     }
     case '駁回': {
-      if (args.length !== 1) return malformed;
-      const employeeId = parseEmployeeId(args[0]!);
+      const employeeId = args.length === 1 ? parseEmployeeId(args[0]!) : null;
       if (employeeId) return { type: 'rejectRegistration', employeeId };
-      const requestId = parseCorrectionId(args[0]!);
-      return requestId ? { type: 'rejectCorrection', requestId } : malformed;
+      return requestDecision('駁回', args, malformed);
     }
     case '時薪': {
       const employeeId = args[0] ? parseEmployeeId(args[0]) : null;

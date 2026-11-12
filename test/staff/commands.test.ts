@@ -261,3 +261,96 @@ describe('parseDateToken', () => {
     expect(parseDateToken('2/30', NOW, 'past')).toBeNull();
   });
 });
+
+describe('parseStaffCommand: §17 batches', () => {
+  it('parses a multi-line 補卡, skipping blank lines', () => {
+    const r = p('補卡 11/10 09:00-18:00\n\n  補卡 11/11 09:00 上班  \r\n補卡 11/11 18:00 下班\n');
+    expect(r).toMatchObject({ type: 'correctionBatch' });
+    const items = (r as { items: unknown[] }).items;
+    expect(items).toEqual([
+      {
+        date: '2026-11-10',
+        time: '09:00',
+        endTime: '18:00',
+        at: new Date('2026-11-10T01:00:00Z'),
+        endAt: new Date('2026-11-10T10:00:00Z'),
+        kind: 'shift',
+      },
+      { date: '2026-11-11', time: '09:00', at: new Date('2026-11-11T01:00:00Z'), kind: 'in' },
+      { date: '2026-11-11', time: '18:00', at: new Date('2026-11-11T10:00:00Z'), kind: 'out' },
+    ]);
+  });
+
+  it('parses a multi-line 代補 with different employees', () => {
+    expect(p('補卡 E001 11/11 09:00 上班\n補卡 E002 11/11 10:00-19:00')).toMatchObject({
+      type: 'adminCorrectionBatch',
+      items: [
+        { employeeId: 1, kind: 'in' },
+        { employeeId: 2, kind: 'shift' },
+      ],
+    });
+  });
+
+  it('refuses the whole message on the first bad line (numbered as the sender sees it)', () => {
+    expect(p('補卡 11/10 09:00 上班\n補卡 11/32 09:00 上班\n補卡 x')).toEqual({
+      type: 'batchMalformed',
+      line: 2,
+      text: '補卡 11/32 09:00 上班',
+    });
+    expect(p('補卡 11/10 09:00 上班\n\n  謝謝  ')).toEqual({
+      type: 'batchMalformed',
+      line: 3,
+      text: '謝謝',
+    });
+    // Mixing 代補 and an employee's own 補卡 is not allowed.
+    expect(p('補卡 11/10 09:00 上班\n補卡 E001 11/10 18:00 下班')).toMatchObject({
+      type: 'batchMalformed',
+      line: 2,
+    });
+    expect(p('補卡 11/10\n補卡 11/10 09:00 上班')).toMatchObject({
+      type: 'batchMalformed',
+      line: 1,
+    });
+  });
+
+  it('refuses more than 12 lines', () => {
+    const lines = Array.from({ length: 13 }, (_, i) => `補卡 11/${i + 1} 09:00 上班`);
+    expect(p(lines.join('\n'))).toEqual({ type: 'batchTooMany', keyword: '補卡' });
+    expect(p(lines.slice(0, 12).join('\n\n'))).toMatchObject({ type: 'correctionBatch' });
+  });
+
+  it('leaves single-line and non-補卡 multi-line messages as before', () => {
+    expect(p('補卡 11/12 09:00 上班\n\n')).toMatchObject({ type: 'correction', kind: 'in' });
+    expect(p('大家好\n補卡 11/12 09:00 上班')).toBeNull();
+    expect(p('註冊\n王小明')).toEqual({ type: 'register', name: '王小明' });
+  });
+
+  it('parses 核准 / 駁回 with several ids', () => {
+    expect(p('核准 R004 R005,R006，R007、r8')).toEqual({
+      type: 'approveCorrections',
+      requestIds: [4, 5, 6, 7, 8],
+    });
+    expect(p('駁回 R004、R005')).toEqual({ type: 'rejectCorrections', requestIds: [4, 5] });
+    expect(p('核准 R004\nR005')).toEqual({ type: 'approveCorrections', requestIds: [4, 5] });
+    // Duplicates count once; one id left = the single command.
+    expect(p('核准 R004 R004')).toEqual({ type: 'approveCorrection', requestId: 4 });
+    expect(p('核准 R4,')).toEqual({ type: 'approveCorrection', requestId: 4 });
+    const ids = Array.from({ length: 13 }, (_, i) => `R${i + 1}`);
+    expect(p(`核准 ${ids.join(' ')}`)).toEqual({ type: 'batchTooMany', keyword: '核准' });
+    expect(p(`駁回 ${ids.join(' ')}`)).toEqual({ type: 'batchTooMany', keyword: '駁回' });
+    expect(p(`核准 ${ids.slice(0, 12).join(' ')} R1`)).toMatchObject({
+      type: 'approveCorrections',
+    });
+    expect(p('核准 R004 X1')).toEqual({ type: 'malformed', keyword: '核准' });
+    expect(p('核准 R004 E001')).toEqual({ type: 'malformed', keyword: '核准' });
+    expect(p('駁回 E001 E002')).toEqual({ type: 'malformed', keyword: '駁回' });
+    expect(p('駁回 E001')).toEqual({ type: 'rejectRegistration', employeeId: 1 });
+  });
+
+  it('parses 核准全部 (and 核准 全部); 駁回全部 is not a command', () => {
+    expect(p('核准全部')).toEqual({ type: 'approveAllCorrections' });
+    expect(p(' 核准 全部 ')).toEqual({ type: 'approveAllCorrections' });
+    expect(p('駁回 全部')).toEqual({ type: 'malformed', keyword: '駁回' });
+    expect(p('駁回全部')).toBeNull();
+  });
+});

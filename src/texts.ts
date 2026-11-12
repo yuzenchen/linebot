@@ -353,12 +353,15 @@ export const staffTexts = {
   error: '系統忙碌中，請稍後再試。',
   noPending: '目前沒有待處理項目',
   noEmployees: '目前沒有員工',
+  /** §17.3 `核准全部` with nothing pending. */
+  noPendingCorrections: '目前沒有待審的補卡',
   correctionFuture: '不能補未來的時間',
   correctionTooOld: '只能補上個月 1 日以後的打卡',
   employeeHelp: [
     '員工指令：',
     '群組：上班、下班、註冊 你的名字',
     '補卡 11/12 09:00 上班、補卡 11/12 09:00-18:00 整班（群組或私訊）',
+    '一次補多筆：一行一筆補卡，最多 12 行',
     '取消 R001（取消自己待審的補卡，群組或私訊）',
     '我的打卡、我的打卡 2026-11',
     '我的薪資、我的薪資 2026-11',
@@ -368,8 +371,10 @@ export const staffTexts = {
     '員工列表、待處理',
     '核准 E001 時薪 200、駁回 E001',
     '核准 R001、駁回 R001',
+    '核准 R001 R002、駁回 R001 R002、核准全部（一次最多 12 筆）',
     '時薪 E001 210、時薪 E001 210 自 12/1',
     '補卡 E001 11/12 18:00 下班、補卡 E001 11/12 09:00-18:00',
+    '代補多筆：一行一筆，最多 12 行',
     '修改 S0123 上班 09:00、修改 S0123 下班 11/13 02:00',
     '刪除打卡 E001 11/12，再回：刪除 S0123',
     '停用 E001、啟用 E001',
@@ -386,8 +391,8 @@ export const staffTexts = {
     說明: '格式：說明',
     員工列表: '格式：員工列表',
     待處理: '格式：待處理',
-    核准: '格式：核准 E001 時薪 200 或 核准 R001',
-    駁回: '格式：駁回 E001 或 駁回 R001',
+    核准: '格式：核准 E001 時薪 200、核准 R001、核准 R001 R002 或 核准全部',
+    駁回: '格式：駁回 E001、駁回 R001 或 駁回 R001 R002',
     時薪: '格式：時薪 E001 210 或 時薪 E001 210 自 12/1',
     刪除打卡: '格式：刪除打卡 E001 11/12',
     刪除: '格式：刪除 S0123（先用 刪除打卡 E001 11/12 查編號）',
@@ -634,6 +639,68 @@ export function staffCorrectionCancelled(
 /** §15.3 `取消 R001` on a request that is no longer pending. */
 export function staffCorrectionNotCancellable(displayId: string, status: string): string {
   return `${displayId} ${STAFF_CORRECTION_STATUS_LABEL[status] ?? status}，無法取消`;
+}
+
+// --- §17 batches ---
+
+/** §17: more than the per-message limit of 補卡 lines or 核准 / 駁回 ids. */
+export function staffBatchTooMany(max: number): string {
+  return `一次最多 ${max} 筆，請分開送`;
+}
+/** §17.1: a multi-line 補卡 with an unusable line (the whole message is refused). */
+export function staffBatchMalformed(line: number, text: string): string {
+  return `第 ${line} 行格式不對：${text}`;
+}
+/** §17.1 answer line of a created (or resent) request: `R004 11/10 09:00–18:00 整班 已送出`. */
+export function staffBatchRequested(
+  displayId: string,
+  atIso: string,
+  kind: CorrectionKind,
+  endIso: string | null = null,
+): string {
+  return `${displayId} ${staffCorrectionWhat(atIso, kind, endIso)} 已送出`;
+}
+/** §17.1 answer line of a refused line: `11/1 09:00 上班：只能補上個月 1 日以後的打卡`. */
+export function staffBatchRefused(
+  atIso: string,
+  kind: CorrectionKind,
+  endIso: string | null,
+  reason: string,
+): string {
+  return `${staffCorrectionWhat(atIso, kind, endIso)}：${reason}`;
+}
+/** §17.2 refused 代補 line: `E001 11/1 09:00 上班：只能補上個月 1 日以後的打卡`. */
+export function staffAdminBatchRefused(
+  employeeDisplayId: string,
+  atIso: string,
+  kind: CorrectionKind,
+  endIso: string | null,
+  reason: string,
+): string {
+  return `${employeeDisplayId} ${staffBatchRefused(atIso, kind, endIso, reason)}`;
+}
+/** §17.1 reason for a line that repeats a pending request (or an earlier line). */
+export function staffBatchDuplicateReason(displayId: string): string {
+  return `${displayId} 已在審核中`;
+}
+/** §17.1 last answer line. */
+export function staffBatchTotal(sent: number): string {
+  return sent > 0 ? `共送出 ${sent} 筆，等待管理員核准` : '沒有送出新的補卡申請';
+}
+/** §17.1 one admin notice for every request a multi-line 補卡 created. */
+export function staffAdminCorrectionBatchNotice(
+  name: string,
+  items: { displayId: string; at: string; kind: CorrectionKind; endAt: string | null }[],
+): string[] {
+  return [
+    `${name} 補卡申請 ${items.length} 筆：`,
+    ...items.map((i) => `${i.displayId} ${staffCorrectionWhat(i.at, i.kind, i.endAt)}`),
+    `核准請回：核准 ${items.map((i) => i.displayId).join(' ')}，或：核准全部`,
+  ];
+}
+/** §17.3 `核准全部` with more pending requests left. */
+export function staffApproveAllRemaining(remaining: number): string {
+  return `另有 ${remaining} 筆待審，可再輸入：核准全部`;
 }
 
 /** §15.2: extra answer line when a change touches a month that already has a payroll run. */

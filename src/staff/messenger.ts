@@ -127,7 +127,30 @@ export function createStaffMessenger(deps: StaffMessengerDeps) {
     return 'none';
   }
 
-  return { pushLines, tryPush, answer, dm, notifyAdmins, dmOrGroup };
+  /**
+   * §17.3 merged `dmOrGroup`: one DM with every line; when that fails, each group gets one
+   * message with the lines that belong to it (`groupId` null = no fallback for that line).
+   */
+  async function dmOrGroups(
+    userId: string,
+    lines: string[],
+    groupLines: { groupId: string | null; text: string }[],
+    reason: string,
+  ): Promise<'dm' | 'group' | 'none'> {
+    if (await dm(userId, lines, reason)) return 'dm';
+    const byGroup = new Map<string, string[]>();
+    for (const { groupId, text } of groupLines) {
+      if (!groupId) continue;
+      byGroup.set(groupId, [...(byGroup.get(groupId) ?? []), text]);
+    }
+    let sent = false;
+    for (const [groupId, texts] of byGroup) {
+      if (await tryPush(groupId, texts, `${reason}_group`)) sent = true;
+    }
+    return sent ? 'group' : 'none';
+  }
+
+  return { pushLines, tryPush, answer, dm, notifyAdmins, dmOrGroup, dmOrGroups };
 }
 
 export type StaffMessenger = ReturnType<typeof createStaffMessenger>;
