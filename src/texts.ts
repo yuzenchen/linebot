@@ -354,7 +354,7 @@ export const staffTexts = {
   noPending: '目前沒有待處理項目',
   noEmployees: '目前沒有員工',
   correctionFuture: '不能補未來的時間',
-  correctionTooOld: '只能補 31 天內的打卡',
+  correctionTooOld: '只能補上個月 1 日以後的打卡',
   employeeHelp: [
     '員工指令：',
     '群組：上班、下班、註冊 你的名字',
@@ -695,7 +695,7 @@ export function staffShiftEditRefused(
     case 'future':
       return `${head}不能改成未來的時間`;
     case 'tooOld':
-      return `${head}只能修改 31 天內的打卡`;
+      return `${head}只能修改上個月 1 日以後的打卡`;
     case 'overlap':
       return `${head}${staffCorrectionReason('overlap', conflict, maxHours)}`;
   }

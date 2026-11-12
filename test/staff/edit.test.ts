@@ -101,7 +101,7 @@ describe('修改 S0123 (§15.2)', () => {
     expect(svc.repo.shifts.listOpen()).toHaveLength(0);
   });
 
-  it('refuses start not before end, too long, future, older than 31 days — writing nothing', () => {
+  it('refuses start not before end, too long, future, before the 1st of last month — writing nothing', () => {
     const { svc, e, id } = fixture();
     const before = svc.repo.shifts.listForEmployee(e.id);
     const auditCount = svc.repo.audit.recent(100).length;
@@ -119,9 +119,9 @@ describe('修改 S0123 (§15.2)', () => {
     expect(refused(svc.editShift(ADMIN, today, edit('out', 12, 1), NOW))).toBe('future');
     expect(refused(svc.editShift(ADMIN, today, edit('in', 12, 30), NOW))).toBe('future');
 
-    const old = addShift(svc, e.id, tp('2026-10-12', 9), tp('2026-10-12', 18)); // 32 days back
+    const old = addShift(svc, e.id, tp('2026-09-30', 9), tp('2026-09-30', 18)); // before 10/1
     expect(refused(svc.editShift(ADMIN, old, edit('out', 17), NOW))).toBe('tooOld');
-    const edge = addShift(svc, e.id, tp('2026-10-13', 9), tp('2026-10-13', 18)); // 31 days back
+    const edge = addShift(svc, e.id, tp('2026-10-01', 9), tp('2026-10-01', 18)); // 1st of last month
     expect(svc.editShift(ADMIN, edge, edit('out', 17), NOW).kind).toBe('edited');
 
     const shiftsNow = svc.repo.shifts.listForEmployee(e.id);

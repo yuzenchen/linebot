@@ -40,13 +40,19 @@ import {
   addDays,
   type LocalDate,
   type Month,
+  previousMonth,
   taipeiDate,
   taipeiInstant,
   taipeiMonth,
 } from './time.js';
 
-/** §6: corrections may go back this many Taipei calendar days (and never into the future). */
-export const CORRECTION_WINDOW_DAYS = 31;
+/**
+ * §6: corrections and edits may go back to the 1st of the previous Taipei month (and never into
+ * the future), so last month stays correctable until after payday.
+ */
+export function correctionWindowStart(now: Date): LocalDate {
+  return `${previousMonth(taipeiMonth(now))}-01`;
+}
 
 export interface StaffServiceOptions {
   /** STAFF_MIN_HOURLY_WAGE: lower wages are allowed but flagged `belowMinimum`. */
@@ -105,7 +111,7 @@ export type CorrectionInput =
 
 /**
  * Validation shared by employee requests and admin 代補: nothing after now (a whole shift's end
- * included), start at most 31 days back, and (whole shift only) no longer than
+ * included), start no earlier than the 1st of last month, and (whole shift only) no longer than
  * STAFF_MAX_SHIFT_HOURS (`tooLong`).
  */
 export type CorrectionWindowOutcome =
@@ -326,7 +332,7 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
 
   function checkWindow(employee: EmployeeRow, at: Date, now: Date): CorrectionWindowOutcome | null {
     if (at.getTime() > now.getTime()) return { kind: 'future', employee };
-    if (taipeiDate(at) < addDays(taipeiDate(now), -CORRECTION_WINDOW_DAYS)) {
+    if (taipeiDate(at) < correctionWindowStart(now)) {
       return { kind: 'tooOld', employee };
     }
     return null;
@@ -902,7 +908,7 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
      * §15.2 `修改 S0123 上班|下班 [date] HH:MM`. Without a date, 上班 uses the shift's start date
      * and 下班 the start date, or the next day when the time is not after the start. Editing the
      * 下班 of an open shift closes it. Refused (nothing written) unless the result starts before
-     * it ends, is at most STAFF_MAX_SHIFT_HOURS, lies between 31 days back and now, and does not
+     * it ends, is at most STAFF_MAX_SHIFT_HOURS, lies between the 1st of last month and now, and does not
      * overlap the employee's other live shifts. The edited end's source becomes `admin`.
      */
     editShift(actor: string, shiftId: number, edit: EditShiftInput, now: Date): EditShiftOutcome {
@@ -937,7 +943,7 @@ export function createStaffService(db: Database, opts: StaffServiceOptions) {
           return refuse('exceedsMaxHours');
         }
         if ((endAt ?? startAt).getTime() > now.getTime()) return refuse('future');
-        if (taipeiDate(startAt) < addDays(taipeiDate(now), -CORRECTION_WINDOW_DAYS)) {
+        if (taipeiDate(startAt) < correctionWindowStart(now)) {
           return refuse('tooOld');
         }
         const conflict = findShiftConflict(

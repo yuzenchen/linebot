@@ -119,13 +119,18 @@ describe('planCorrection (pure)', () => {
 });
 
 describe('correction requests (§6)', () => {
-  it('validates the window: not future, at most 31 days back', () => {
+  it('validates the window: not future, not before the 1st of last month', () => {
     const { svc } = setup();
     hire(svc, 'Ua', '王小明', 200, tp('2026-10-01', 8));
     const req = (at: Date) => svc.requestCorrection('Ua', { kind: 'in', at }, 'Cg', NOW);
     expect(req(tp(D, 20, 1)).kind).toBe('future');
-    expect(req(tp('2026-10-11', 9)).kind).toBe('tooOld'); // 32 days back
-    expect(req(tp('2026-10-12', 0, 0)).kind).toBe('requested'); // 31 days back
+    expect(req(tp('2026-09-30', 23, 59)).kind).toBe('tooOld'); // before 10/1
+    expect(req(tp('2026-10-01', 0, 0)).kind).toBe('requested'); // 1st of last month
+    // Day before payday: all of last month is still correctable (44 days back here).
+    const lateNow = tp('2026-12-14', 12);
+    const late = (at: Date) => svc.requestCorrection('Ua', { kind: 'out', at }, null, lateNow);
+    expect(late(tp('2026-11-01', 9)).kind).toBe('requested');
+    expect(late(tp('2026-10-31', 18)).kind).toBe('tooOld');
     expect(svc.requestCorrection('Unobody', { kind: 'in', at: tp(D, 9) }, null, NOW)).toEqual({
       kind: 'notRegistered',
     });
@@ -419,12 +424,12 @@ describe('whole-shift corrections (§15.4)', () => {
     expect(svc.repo.shifts.listForEmployee(e.id)).toEqual(before2);
   });
 
-  it('checks the request: end not in the future, start within 31 days, at most 16 h', () => {
+  it('checks the request: end not in the future, start from the 1st of last month, at most 16 h', () => {
     const { svc } = setup();
     hire(svc, 'Ua', '王小明', 200, tp('2026-10-01', 8));
     const req = (s: Date, e: Date) => svc.requestCorrection('Ua', whole(s, e), null, NOW).kind;
     expect(req(tp(D, 19), tp(D, 20, 1))).toBe('future');
-    expect(req(tp('2026-10-11', 9), tp('2026-10-11', 18))).toBe('tooOld');
+    expect(req(tp('2026-09-30', 9), tp('2026-09-30', 18))).toBe('tooOld');
     expect(req(tp('2026-11-11', 8), tp(D, 0, 1))).toBe('tooLong');
     expect(req(tp('2026-11-11', 8), tp(D, 0))).toBe('requested'); // exactly 16 h
     expect(svc.adminCorrection(ADMIN, 1, whole(tp(D, 1), tp(D, 18)), NOW).kind).toBe('tooLong');
