@@ -201,6 +201,6 @@ SPEC-STAFF §16：`config.ts` 加 `STAFF_BACKUP_SHEET_URL`、`STAFF_BACKUP_TOKEN
 
 ## T25 批次補卡與批次核准（Medium）— 依賴：T23、SPEC-STAFF §17
 
-- [ ] 狀態
+- [x] 狀態（2026-11-12 部署 Pi `linebot-staff`，正式環境尚未實測，見 VERIFY.md）
 
 SPEC-STAFF §17：指令解析支援多行補卡（員工與管理員代補，最多 12 行，任一行格式錯或超過上限整則不處理）與 `核准|駁回 R… R…`（空白、逗號、頓號，去重，最多 12）、`核准全部`（最早 12 筆）；service 批次申請逐行檢查、代補依行序套用、批次核准依補卡時間排序；管理員通知合併一則、申請人結果依人（與群組）合併一則；回覆一行一筆；`說明`、§9 同步。單筆行為不變。測試用 mock LINE client 與臨時 SQLite。

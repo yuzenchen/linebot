@@ -159,3 +159,5 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - 錯誤 token POST → `{"ok":false,"error":"unauthorized"}`。
 - 容器啟動後當天排程備份立即執行成功（`staff_backups` id 1）：員工 1、時薪 1、打卡 0、補卡 0、結算 0、操作紀錄 2；試算表各分頁內容與資料庫一致，備份資訊分頁記錄資料庫版本 11。
 - 尚未實測：管理員 `備份`、`備份 強制`、筆數減少拒絕、失敗通知與恢復通知；補卡範圍新規則的實際回覆。
+
+- `d0acee5`（T25、SPEC-STAFF §17 批次補卡與批次核准）已部署 Pi `linebot-staff`，無新 migration；`/health` 200，未簽章 webhook 401，三個排程正常啟動。633 個測試通過。正式環境尚未實測多行補卡、批次核准與 `核准全部`。
