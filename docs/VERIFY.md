@@ -150,3 +150,12 @@ $ npm run export:suggestions     → 已匯出 0 筆 → tmp-verify2\exports\sug
 - 清理測試資料（使用者授權，先備份 `data-staff/linebot.db.bak-20261112-cleanup`）：刪除 E001、E002 的員工、時薪、打卡與 2026-11 測試結算（`payroll_runs` id 2）；刪除 E003 的 3 班打卡與 R001–R003；相關 `audit_log` 6 筆一併刪除；`shifts`、`correction_requests` 編號歸零。保留 E003 帳號與 2026-10 排程結算紀錄。
 - 正式群組加入 `STAFF_GROUP_IDS`（測試群組保留），本機與 Pi `.env.staff` 一致；Pi 備份 `.env.staff.bak-20261112b`。
 - 尚未在正式環境實測：整班補卡、取消、修改打卡、核准失敗通知、待審提醒實際發送。
+
+
+## 補卡範圍與每日備份（2026-11-12）
+
+- `b866001`（補卡、代補、修改範圍改為上個月 1 日起）與 `77dd673`（T24、SPEC-STAFF §16）已部署 Pi `linebot-staff`；部署前備份 `data-staff/linebot.db.bak-20261112-pre011`，migration 011 套用。
+- 備份試算表「Wama 員工出勤備份」與 Apps Script 獨立專案（同名、`openById`）建在使用者 Google 帳號；網頁應用程式執行身分為使用者、存取「所有人」，指令碼屬性 `TOKEN` 由使用者填入。網址與 token 只在本機與 Pi `.env.staff`（Pi 備份 `.env.staff.bak-20261112c`）。
+- 錯誤 token POST → `{"ok":false,"error":"unauthorized"}`。
+- 容器啟動後當天排程備份立即執行成功（`staff_backups` id 1）：員工 1、時薪 1、打卡 0、補卡 0、結算 0、操作紀錄 2；試算表各分頁內容與資料庫一致，備份資訊分頁記錄資料庫版本 11。
+- 尚未實測：管理員 `備份`、`備份 強制`、筆數減少拒絕、失敗通知與恢復通知；補卡範圍新規則的實際回覆。

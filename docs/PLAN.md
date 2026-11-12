@@ -195,6 +195,6 @@ SPEC-STAFF §15：migration 010 重建 `correction_requests`（`kind` 加 `shift
 
 ## T24 每日備份到 Google 試算表（Medium）— 依賴：T23、SPEC-STAFF §16
 
-- [ ] 狀態
+- [x] 狀態（2026-11-12 部署 Pi `linebot-staff`，排程備份實測成功，見 VERIFY.md）
 
 SPEC-STAFF §16：`config.ts` 加 `STAFF_BACKUP_SHEET_URL`、`STAFF_BACKUP_TOKEN`（選填，兩者都有才啟用）、`STAFF_BACKUP_HOUR`（預設 1）；migration 011 建 `staff_backups`；`src/staff/backup.ts` 把七個分頁組成 JSON（台北時間、`payroll_runs` 快照展開）POST 到 Apps Script，帶 token 與 `force`；排程每天 `STAFF_BACKUP_HOUR` 跑一次、重啟不重跑、失敗每小時重試，連續失敗只通知一次、恢復時通知；管理員指令 `備份`、`備份 強制`；`docs/STAFF-BACKUP.md` 含 Apps Script（token 比對、筆數減少拒絕、覆寫分頁）與設定步驟；`.env.example`、README、filemap、`說明`、§9、§12 同步。測試用 mock fetch 與臨時 SQLite。
