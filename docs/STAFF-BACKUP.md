@@ -19,6 +19,8 @@
 2. 刪掉編輯器裡預設的 `function myFunction() {}`，貼上第 6 節的完整程式碼。
 3. 按儲存（磁碟圖示），專案名稱可填「員工打卡備份」。
 
+> 也可以改用獨立專案（[script.google.com](https://script.google.com) →「新專案」），這時把程式碼裡的 `SpreadsheetApp.getActiveSpreadsheet()` 換成 `SpreadsheetApp.openById('試算表 ID')`（網址 `/spreadsheets/d/` 與 `/edit` 之間那段）。正式環境（2026-11-12）用的是這種做法：試算表與 Apps Script 專案都叫「Wama 員工出勤備份」。
+
 ## 3. 設定 token
 
 1. 產生一組隨機字串當 token，例如在 Pi 上執行：
